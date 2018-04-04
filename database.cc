@@ -2059,7 +2059,7 @@ future<> distributed_loader::populate_column_family(distributed<database>& db, s
                     // shard 0 is the responsible for removing a partial sstable.
                     return sstables::sstable::remove_sstable_with_temp_toc(ks, cf, sstdir, gen, version, format);
                 } else if (v.second != status::has_toc_file) {
-                    throw sstables::malformed_sstable_exception(sprint("At directory: %s: no TOC found for SSTable with generation %d!. Refusing to boot", sstdir, v.first));
+                    throw sstables::malformed_sstable_exception(sprint("At directory: %s: no TOC found for SSTable %s-%s with generation %d!. Refusing to boot", sstdir, ks, cf, v.first));
                 }
                 return make_ready_future<>();
             });

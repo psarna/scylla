@@ -129,7 +129,7 @@ public:
             } else if (clustering.size() == (expected_normal + 1)) {
                 return true;
             }
-            throw malformed_sstable_exception(sprint("Found %d clustering elements in column name. Was not expecting that!", clustering.size()));
+            throw malformed_sstable_exception(sprint("Found %d clustering elements in column name. Was not expecting that!", clustering.size()), s.ks_cf_name());
         }
 
         static bool check_static(const schema& schema, bytes_view col) {
@@ -163,13 +163,13 @@ public:
             if (is_static) {
                 for (auto& e: clustering) {
                     if (e.size() != 0) {
-                        throw malformed_sstable_exception("Static row has clustering key information. I didn't expect that!");
+                        throw malformed_sstable_exception("Static row has clustering key information. I didn't expect that!", schema.ks_cf_name());
                     }
                 }
             }
             if (is_present && is_static != cdef->is_static()) {
                 throw malformed_sstable_exception(seastar::format("Mismatch between {} cell and {} column definition",
-                        is_static ? "static" : "non-static", cdef->is_static() ? "static" : "non-static"));
+                        is_static ? "static" : "non-static", cdef->is_static() ? "static" : "non-static"), schema.ks_cf_name());
             }
         }
     };
@@ -221,7 +221,7 @@ private:
             flush_pending_collection(*_schema);
 
             if (!cdef->is_multi_cell()) {
-                throw malformed_sstable_exception("frozen set should behave like a cell\n");
+                throw malformed_sstable_exception("frozen set should behave like a cell\n", _schema->ks_cf_name());
             }
             _pending_collection = collection_mutation(cdef);
         }

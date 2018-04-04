@@ -737,6 +737,9 @@ public:
     const sstring& cf_name() const {
         return _raw._cf_name;
     }
+    sstring ks_cf_name() const {
+        return format("%s-%s", _raw._ks_name, _raw._cf_name);
+    }
     const lw_shared_ptr<compound_type<allow_prefixes::no>>& partition_key_type() const {
         return _partition_key_type;
     }
