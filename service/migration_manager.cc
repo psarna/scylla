@@ -49,6 +49,7 @@
 #include "utils/runtime.hh"
 #include "gms/gossiper.hh"
 #include "view_info.hh"
+#include "schema_builder.hh"
 
 namespace service {
 
@@ -664,13 +665,11 @@ future<> migration_manager::announce_column_family_drop(const sstring& ks_name,
         if (schema->is_view()) {
             throw exceptions::invalid_request_exception("Cannot use DROP TABLE on Materialized View");
         }
-        auto&& views = old_cfm.views();
-        if (!views.empty()) {
-            throw exceptions::invalid_request_exception(sprint(
-                        "Cannot drop table when materialized views still depend on it (%s.{%s})",
-                        ks_name, ::join(", ", views | boost::adaptors::transformed([](auto&& v) { return v->cf_name(); }))));
-        }
+        //auto&& views = old_cfm.views();
         mlogger.info("Drop table '{}.{}'", schema->ks_name(), schema->cf_name());
+        //announce_column_family_update(builder.build(), false, {}, is_local_only)
+        //auto builder = schema_builder(schema).without_indexes();
+        //return announce_column_family_update(builder.build(), false, {}, announce_locally);
         return db::schema_tables::make_drop_table_mutations(db.find_keyspace(ks_name).metadata(), schema, api::new_timestamp())
             .then([announce_locally] (auto&& mutations) {
                 return announce(std::move(mutations), announce_locally);
