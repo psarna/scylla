@@ -455,7 +455,7 @@ void test_update_column_not_in_view(cql_test_env& e, std::function<void()>&& may
         }});
     });
 
-    assert_that_failed(e.execute_cql("alter table cf drop v2;"));
+    assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter table cf drop v2;"));
 }
 
 SEASTAR_TEST_CASE(test_update_column_not_in_view_without_flush) {
@@ -535,7 +535,7 @@ e.execute_cql("create table cf (p int, c int, a int, b int, l list<int>, s set<i
         }});
     });
 
-    assert_that_failed(e.execute_cql("alter table cf drop m;"));
+    assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter table cf drop m;"));
 }
 
 SEASTAR_TEST_CASE(test_partial_update_with_unselected_collections_without_flush) {

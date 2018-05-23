@@ -91,7 +91,7 @@ SEASTAR_TEST_CASE(test_drop_table_with_si_and_mv) {
             e.execute_cql("CREATE INDEX idx2 ON tbl (c)").get();
             e.execute_cql("CREATE MATERIALIZED VIEW tbl_view AS SELECT c FROM tbl WHERE c IS NOT NULL PRIMARY KEY (c, a)").get();
             // dropping a table with materialized views is prohibited
-            assert_that_failed(e.execute_cql("DROP TABLE tbl"));
+            assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("DROP TABLE tbl"), ".*Cannot drop table when materialized views still depend on it.*");
             e.execute_cql("DROP MATERIALIZED VIEW tbl_view").get();
             // dropping a table with secondary indexes is fine
             e.execute_cql("DROP TABLE tbl").get();
@@ -1340,19 +1340,19 @@ SEASTAR_TEST_CASE(test_validate_keyspace) {
         return make_ready_future<>().then([&e] {
             return e.execute_cql("create keyspace kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkssssssssssssssssssssssssssssssssssssssssssssss with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*names shouldn't be more than.*");
             return e.execute_cql("create keyspace ks3-1 with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f, ".*extraneous input.*");
             return e.execute_cql("create keyspace ks3 with replication = { 'replication_factor' : 1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, "Missing mandatory replication strategy class");
             return e.execute_cql("create keyspace ks3 with rreplication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f, "Unknown property.*");
             return e.execute_cql("create keyspace SyStEm with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*system keyspace is not user-modifiable.*");
         });
     });
 }
@@ -1362,28 +1362,28 @@ SEASTAR_TEST_CASE(test_validate_table) {
         return make_ready_future<>().then([&e] {
             return e.execute_cql("create table ttttttttttttttttttttttttttttttttttttttttbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (foo text PRIMARY KEY, bar text);");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*names shouldn't be more than.*");
             return e.execute_cql("create table tb (foo text PRIMARY KEY, foo text);");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, "Multiple definition of identifier.*");
             return e.execute_cql("create table tb-1 (foo text PRIMARY KEY, bar text);");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f, ".*extraneous input.*");
             return e.execute_cql("create table tb (foo text, bar text);");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*No PRIMARY KEY specifed.*");
             return e.execute_cql("create table tb (foo text PRIMARY KEY, bar text PRIMARY KEY);");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Multiple PRIMARY KEYs specifed.*");
             return e.execute_cql("create table tb (foo text PRIMARY KEY, bar text) with commment = 'aaaa';");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f, ".*Unknown property.*");
             return e.execute_cql("create table tb (foo text PRIMARY KEY, bar text) with min_index_interval = -1;");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*min_index_interval must be greater than 0.*");
             return e.execute_cql("create table tb (foo text PRIMARY KEY, bar text) with min_index_interval = 1024 and max_index_interval = 128;");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*max_index_interval must be greater than min_index_interval.*");
         });
     });
 }
@@ -1403,13 +1403,13 @@ SEASTAR_TEST_CASE(test_table_compression) {
             BOOST_REQUIRE(e.local_db().find_schema("ks", "tb5")->get_compressor_params().get_compressor() == nullptr);
             return e.execute_cql("create table tb2 (foo text PRIMARY KEY, bar text) with compression = { 'sstable_compression' : 'LossyCompressor' };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<no_such_class>(f, ".*unable to find class.*");
             return e.execute_cql("create table tb2 (foo text PRIMARY KEY, bar text) with compression = { 'sstable_compression' : 'LZ4Compressor', 'chunk_length_kb' : -1 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*Invalid negative or null chunk_length_kb.*");
             return e.execute_cql("create table tb2 (foo text PRIMARY KEY, bar text) with compression = { 'sstable_compression' : 'LZ4Compressor', 'chunk_length_kb' : 3 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*chunk_length_kb must be a power of 2.*");
             return e.execute_cql("create table tb2 (foo text PRIMARY KEY, bar text) with compression = { 'sstable_compression' : 'LZ4Compressor', 'chunk_length_kb' : 2 };");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
             assert(!f.failed());
@@ -1811,16 +1811,16 @@ SEASTAR_TEST_CASE(test_order_by_validate) {
         return e.execute_cql("create table torderv (p1 int, c1 int, c2 int, r1 int, r2 int, PRIMARY KEY(p1, c1, c2));").discard_result().then([&e] {
             return e.execute_cql("select c2, r1 from torderv where p1 = 0 order by c desc;");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Order by on unknown column.*");
             return e.execute_cql("select c2, r1 from torderv where p1 = 0 order by c2 desc;");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Order by currently only support the ordering of columns following their declared order in the PRIMARY KEY.*");
             return e.execute_cql("select c2, r1 from torderv where p1 = 0 order by c1 desc, c2 asc;");
         }).then_wrapped([&e] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Unsupported order by relation.*");
             return e.execute_cql("select c2, r1 from torderv order by c1 asc;");
         }).then_wrapped([] (future<shared_ptr<cql_transport::messages::result_message>> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*ORDER BY is only supported when the partition key is restricted by an EQ or an IN.*");
         });
     });
 }
@@ -2464,22 +2464,22 @@ SEASTAR_TEST_CASE(test_alter_table_validation) {
             assert(!f.failed());
             return e.execute_cql("alter table tatv add r2 list<int>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Cannot add a collection with the name .* because a collection with the same name and a different type has already been used in the past.*");
             return e.execute_cql("alter table tatv add r2 set<text>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Cannot add a collection with the name .* because a collection with the same name and a different type has already been used in the past.*");
             return e.execute_cql("alter table tatv add r2 set<int>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
             assert(!f.failed());
             return e.execute_cql("alter table tatv rename r2 to r3;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Cannot rename non PRIMARY KEY part.*");
             return e.execute_cql("alter table tatv alter r1 type bigint;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*types are incompatible.*");
             return e.execute_cql("alter table tatv alter r2 type map<int, int>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::configuration_exception>(f, ".*types are incompatible.*");
             return e.execute_cql("alter table tatv add r3 map<int, int>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
             assert(!f.failed());
@@ -2494,10 +2494,10 @@ SEASTAR_TEST_CASE(test_alter_table_validation) {
             assert(!f.failed());
             return e.execute_cql("alter table tatv add r3 map<int, text>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Cannot add a collection with the name .* because a collection with the same name and a different type has already been used in the past.*");
             return e.execute_cql("alter table tatv add r4 set<int>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::invalid_request_exception>(f, ".*Cannot add a collection with the name .* because a collection with the same name and a different type has already been used in the past.*");
             return e.execute_cql("alter table tatv add r3 map<int, blob>;").discard_result();
         }).then_wrapped([&e] (future<> f) {
             assert(!f.failed());
@@ -2519,16 +2519,16 @@ SEASTAR_TEST_CASE(test_pg_style_string_literal) {
         }).then([&e] {
             return e.execute_cql("insert into test (p1) values ($ $invalid$$);").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f);
             return e.execute_cql("insert into test (p1) values ($$invalid$ $);").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f);
             return e.execute_cql("insert into test (p1) values ($ $invalid$$$);").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f);
             return e.execute_cql("insert into test (p1) values ($$ \n\n$invalid);").discard_result();
         }).then_wrapped([&e] (future<> f) {
-            assert_that_failed(f);
+            assert_that_failed_with<exceptions::syntax_exception>(f);
             return e.execute_cql("select * from test;");
         }).then([&e] (shared_ptr<cql_transport::messages::result_message> msg) {
             assert_that(msg).is_rows().with_rows({
