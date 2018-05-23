@@ -26,6 +26,8 @@
 #include "bytes.hh"
 #include "core/shared_ptr.hh"
 #include "core/future.hh"
+#include "core/print.hh"
+#include <regex>
 
 class rows_assertions {
     shared_ptr<cql_transport::messages::result_message::rows> _rows;
@@ -71,4 +73,22 @@ void assert_that_failed(future<T...>&& f)
     }
     catch (...) {
     }
+}
+
+template<typename Exception, typename... T>
+void assert_that_failed_with(future<T...>& f, const sstring& reg_expr = "[\\s\\S]*") {
+    try {
+        f.get();
+        assert(f.failed());
+    } catch (const Exception& e) {
+        std::regex r(reg_expr.c_str());
+        BOOST_REQUIRE_MESSAGE(std::regex_match(e.what(), r), sprint("Exception message doesn't match: <%s> vs <%s>", e.what(), reg_expr));
+    } catch (...) {
+        BOOST_FAIL(sprint("Incorrect exception type caught: %s", std::current_exception()));
+    }
+}
+
+template<typename Exception, typename... T>
+void assert_that_failed_with(future<T...>&& f, const sstring& reg_expr = "[\\s\\S]*") {
+    return assert_that_failed_with<Exception>(f, reg_expr);
 }
