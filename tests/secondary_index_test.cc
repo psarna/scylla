@@ -80,15 +80,11 @@ SEASTAR_TEST_CASE(test_secondary_index_clustering_key_query) {
 SEASTAR_TEST_CASE(test_secondary_index_single_column_partition_key) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.execute_cql("create table cf (p int primary key, a int)").get();
-        // Expecting exception: "exceptions::invalid_request_exception:
-        // Cannot create secondary index on partition key column p"
-        assert_that_failed(e.execute_cql("create index on cf (p)"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("create index on cf (p)"), ".*Cannot create secondary index on partition key column.*");
         // The same happens if we also have a clustering key, but still just
         // one partition key column and we want to index it
         e.execute_cql("create table cf2 (p int, c1 int, c2 int, a int, primary key (p, c1, c2))").get();
-        // Expecting exception: "exceptions::invalid_request_exception:
-        // Cannot create secondary index on partition key column p"
-        assert_that_failed(e.execute_cql("create index on cf2 (p)"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("create index on cf2 (p)"), ".*Cannot create secondary index on partition key column.*");
     });
 }
 
@@ -143,7 +139,7 @@ SEASTAR_TEST_CASE(test_cannot_drop_secondary_index_backing_mv) {
         e.execute_cql("create index on cf (a)").get();
         auto s = e.local_db().find_schema(sstring("ks"), sstring("cf"));
         auto index_name = s->index_names().front();
-        assert_that_failed(e.execute_cql(sprint("drop materialized view %s_index", index_name)));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(sprint("drop materialized view %s_index", index_name)));
     });
 }
 
@@ -180,14 +176,13 @@ SEASTAR_TEST_CASE(test_secondary_index_if_exists) {
         // Confirm that creating the same index again with "if not exists" is
         // fine, but without "if not exists", it's an error.
         e.execute_cql("create index if not exists on cf (a)").get();
-        assert_that_failed(e.execute_cql("create index on cf (a)"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("create index on cf (a)"));
         // Confirm that after dropping the index, dropping it again with
         // "if exists" is fine, but an error without it.
         e.execute_cql("drop index cf_a_idx").get();
         e.execute_cql("drop index if exists cf_a_idx").get();
-        // Expect exceptions::invalid_request_exception: Index 'cf_a_idx'
-        // could not be found in any of the tables of keyspace 'ks'
-        assert_that_failed(seastar::futurize_apply([&e] { return e.execute_cql("drop index cf_a_idx"); }));
+        assert_that_failed_with<exceptions::invalid_request_exception>(seastar::futurize_apply([&e] { return e.execute_cql("drop index cf_a_idx"); }),
+                ".*could not be found in any of the tables.*");
     });
 }
 

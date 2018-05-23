@@ -89,9 +89,9 @@ SEASTAR_TEST_CASE(test_access_and_schema) {
                       "where v is not null and p is not null and c is not null "
                       "primary key (v, p, c)").get();
         e.execute_cql("insert into cf (p, c, v) values (0, 'foo', 1);").get();
-        assert_that_failed(e.execute_cql("insert into vcf (p, c, v) values (1, 'foo', 1);"));
-        assert_that_failed(e.execute_cql("alter table vcf add foo text;"));
-        assert_that_failed(e.execute_cql("alter table vcf with compaction = { 'class' : 'LeveledCompactionStrategy' };"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("insert into vcf (p, c, v) values (1, 'foo', 1);"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter table vcf add foo text;"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter table vcf with compaction = { 'class' : 'LeveledCompactionStrategy' };"));
         e.execute_cql("alter materialized view vcf with compaction = { 'class' : 'LeveledCompactionStrategy' };").get();
         e.execute_cql("alter table cf add foo text;").get();
         e.execute_cql("insert into cf (p, c, v, foo) values (0, 'foo', 1, 'bar');").get();
@@ -229,7 +229,7 @@ SEASTAR_TEST_CASE(test_all_types) {
                                           "where %s is not null and k is not null primary key (%s, k)",
                                           col.name_as_text(), col.name_as_text(), col.name_as_text()));
             if (col.type->is_multi_cell() || col.is_partition_key()) {
-                assert_that_failed(f);
+                assert_that_failed_with<exceptions::invalid_request_exception>(f);
             } else {
                 f.get();
             }
@@ -696,7 +696,7 @@ SEASTAR_TEST_CASE(test_drop_table_with_mv) {
         e.execute_cql("create materialized view vcf as select * from cf "
                       "where v is not null and p is not null "
                       "primary key (v, p)").get();
-        assert_that_failed(e.execute_cql("drop table vcf"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("drop table vcf"));
     });
 }
 
@@ -706,7 +706,7 @@ SEASTAR_TEST_CASE(test_drop_table_with_active_mv) {
         e.execute_cql("create materialized view vcf as select * from cf "
                       "where v is not null and p is not null "
                       "primary key (v, p)").get();
-        assert_that_failed(e.execute_cql("drop table cf"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("drop table cf"));
         e.execute_cql("drop materialized view vcf").get();
         e.execute_cql("drop table cf").get();
     });
@@ -758,14 +758,14 @@ SEASTAR_TEST_CASE(test_alter_incompatible_type) {
         e.execute_cql("create materialized view vcf as select * from cf "
                       "where p is not null and c is not null "
                       "primary key (p, c) with clustering order by (c desc)").get();
-        assert_that_failed(e.execute_cql("alter table cf alter c type blob"));
+        assert_that_failed_with<exceptions::configuration_exception>(e.execute_cql("alter table cf alter c type blob"));
     });
 }
 
 SEASTAR_TEST_CASE(test_drop_non_existing) {
     return do_with_cql_env_thread([] (auto& e) {
-        assert_that_failed(e.execute_cql("drop materialized view view_doees_not_exist;"));
-        assert_that_failed(e.execute_cql("drop materialized view keyspace_does_not_exist.view_doees_not_exist;"));
+        assert_that_failed_with<exceptions::configuration_exception>(e.execute_cql("drop materialized view view_doees_not_exist;"));
+        assert_that_failed_with<exceptions::configuration_exception>(e.execute_cql("drop materialized view keyspace_does_not_exist.view_doees_not_exist;"));
         e.execute_cql("drop materialized view if exists view_doees_not_exist;").get();
         e.execute_cql("drop materialized view if exists keyspace_does_not_exist.view_doees_not_exist;").get();
     });
@@ -830,15 +830,15 @@ SEASTAR_TEST_CASE(test_ck_tombstone) {
 SEASTAR_TEST_CASE(test_static_table) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("create table cf (p int, c int, sv int static, v int, primary key (p, c))").get();
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                         "create materialized view vcf_static as select * from cf "
                         "where p is not null and c is not null and sv is not null "
                         "primary key (sv, p, c)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                         "create materialized view vcf_static as select v, sv from cf "
                         "where p is not null and c is not null and v is not null "
                         "primary key (v, p, c)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                         "create materialized view vcf_static as select * from cf "
                         "where p is not null and c is not null and v is not null "
                         "primary key (v, p, c)"));
@@ -967,7 +967,7 @@ SEASTAR_TEST_CASE(test_regular_column_timestamp_updates) {
 SEASTAR_TEST_CASE(test_counters_table) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("create table cf (p int primary key, count counter)").get();
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view vcf_static as select * from cf "
                 "where p is not null and count is not null "
                 "primary key (count, p)"));
@@ -1554,11 +1554,11 @@ SEASTAR_TEST_CASE(test_delete_single_column_in_view_partition_key) {
 SEASTAR_TEST_CASE(test_multiple_non_primary_keys_in_view) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("create table cf (a int, b int, c int, d int, e int, primary key ((a, b), c))").get();
-        assert_that_failed(
+        assert_that_failed_with<exceptions::invalid_request_exception>(
                 e.execute_cql("create materialized view mv as select * from cf "
                               "where a is not null and b is not null and c is not null and d is not null and e is not null "
                               "primary key ((d, a), b, e, c)"));
-        assert_that_failed(
+        assert_that_failed_with<exceptions::invalid_request_exception>(
                 e.execute_cql("create materialized view mv as select * from cf "
                               "where a is not null and b is not null and c is not null and d is not null and e is not null "
                               "primary key ((a, b), c, d, e)"));
@@ -1595,29 +1595,29 @@ SEASTAR_TEST_CASE(test_null_in_clustering_columns) {
 SEASTAR_TEST_CASE(test_create_and_alter_mv_with_ttl) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("create table cf (p int primary key, v int) with default_time_to_live = 60").get();
-        assert_that_failed(
+        assert_that_failed_with<exceptions::invalid_request_exception>(
                 e.execute_cql("create materialized view mv as select * from cf "
                               "where p is not null and v is not null "
                               "primary key (v, p) with default_time_to_live = 30"));
         e.execute_cql("create materialized view vcf as select * from cf "
                       "where p is not null and v is not null "
                       "primary key (v, p)").get();
-        assert_that_failed(e.execute_cql("alter materialized view mv with default_time_to_live = 30"));
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter materialized view mv with default_time_to_live = 30"));
     });
 }
 
 SEASTAR_TEST_CASE(test_create_with_select_restrictions) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("create table cf (a int, b int, c int, d int, e int, primary key ((a, b), c, d))").get();
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view mv as select * from cf where b is not null and c is not null and d is not null primary key ((a, b), c, d)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view mv as select * from cf where a is not null and c is not null and d is not null primary key ((a, b), c, d)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view mv as select * from cf where a is not null and b is not null and d is not null primary key ((a, b), c, d)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view mv as select * from cf where a is not null and b is not null and c is not null primary key ((a, b), c, d)"));
-        assert_that_failed(e.execute_cql(
+        assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql(
                 "create materialized view mv as select * from cf primary key (a, b, c, d)"));
 
         e.execute_cql("create materialized view mv1 as select * from cf where a = 1 and b = 1 and c is not null and d is not null primary key ((a, b), c, d)").get();

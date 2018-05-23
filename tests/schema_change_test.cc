@@ -237,7 +237,7 @@ SEASTAR_TEST_CASE(test_combined_column_add_and_drop) {
             auto new_schema = e.db().local().find_schema(s1->id());
             BOOST_REQUIRE(new_schema->get_column_definition(to_bytes("v1")) == nullptr);
 
-            assert_that_failed(e.execute_cql("alter table ks.table1 add v1 list<text>;"));
+            assert_that_failed_with<exceptions::invalid_request_exception>(e.execute_cql("alter table ks.table1 add v1 list<text>;"));
         });
     });
 }
