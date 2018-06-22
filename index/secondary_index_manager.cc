@@ -122,13 +122,13 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
     // Additional token column is added to ensure token order on secondary index queries
     bytes token_column_name = get_available_token_column_name(*schema);
     builder.with_column(token_column_name, bytes_type, column_kind::clustering_key);
-    for (auto& col : schema->partition_key_columns()) {
+    for (auto& col : schema->clustering_key_columns()) {
         if (col == *index_target) {
             continue;
         }
         builder.with_column(col.name(), col.type, column_kind::clustering_key);
     }
-    for (auto& col : schema->clustering_key_columns()) {
+    for (auto& col : schema->partition_key_columns()) {
         if (col == *index_target) {
             continue;
         }

@@ -317,3 +317,29 @@ SEASTAR_TEST_CASE(test_many_columns) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_correct_secondary_index_column_order) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        auto prepared = e.execute_cql(
+            "CREATE TABLE ks.cf (p int, p2 int, c int, v int, PRIMARY KEY ((p, p2), c))").get();
+        e.require_table_exists("ks", "cf").get();
+
+        e.execute_cql("CREATE INDEX cf_v_idx ON ks.cf (v);").get();
+        e.execute_cql("INSERT INTO cf (p, p2, c, v) VALUES (1, 2, 3, 4);").get();
+        auto msg = e.execute_cql("select * from cf_v_idx_index;").get0();
+
+        auto s = e.local_db().find_schema(sstring("ks"), sstring("cf"));
+        auto pk = partition_key::from_exploded(*s, {int32_type->decompose(1), int32_type->decompose(2)});
+        auto token = dht::global_partitioner().get_token(*s, pk);
+
+        // Proper order is [v, token_column, c, p, p2], to ensure that ordering is per token + clustering keys
+        // and partition key is last
+        assert_that(msg).is_rows().with_rows({{
+            int32_type->decompose(4),
+            dht::global_partitioner().token_to_bytes(token),
+            int32_type->decompose(3),
+            int32_type->decompose(1),
+            int32_type->decompose(2)
+        }});
+    });
+}
