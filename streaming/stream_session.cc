@@ -64,7 +64,75 @@
 namespace streaming {
 
 logging::logger sslog("stream_session");
+static logging::logger srn("SARNA");
 
+class mutation_writing_consumer {
+    schema_ptr _schema;
+    service::storage_proxy& _proxy;
+    std::optional<mutation_partition> _mp;
+    std::optional<dht::decorated_key> _current_key;
+public:
+    mutation_writing_consumer(schema_ptr schema, service::storage_proxy& proxy)
+            : _schema(schema), _proxy(proxy), _mp(), _current_key() {
+        srn.warn("Working on table {}", schema->cf_name());
+    }
+
+    void consume_new_partition(const dht::decorated_key& dk) {
+        //srn.warn("New partition {}. is mp emplaced already? {}", dk, bool(_mp));
+        _current_key = dk;
+        _mp = mutation_partition(_schema);
+    }
+    void consume(tombstone t) {
+        //srn.warn("Applying tombstone {}", t);
+        _mp->apply(std::move(t));
+    }
+    stop_iteration consume(static_row&& sr) {
+        //srn.warn("Applying sr {}", sr);
+        _mp->apply(*_schema, std::move(sr));
+        return stop_iteration::no;
+    }
+    stop_iteration consume(clustering_row&& cr) {
+        //srn.warn("Applying cr {}", cr);
+        _mp->apply(*_schema, std::move(cr));
+        return stop_iteration::no;
+    }
+    stop_iteration consume(range_tombstone&& rt) {
+        //srn.warn("Applying rtombstone {}", rt);
+        _mp->apply(*_schema, std::move(rt));
+        return stop_iteration::no;
+    }
+    stop_iteration consume_end_of_partition() {
+        //srn.warn("Applying EOP for {}", *_mp);
+        mutation m(_schema, *_current_key, std::move(*_mp));
+
+        _mp.reset();
+        _current_key.reset();
+
+        if (_schema->cf_name() == "t") {
+            srn.warn("Sending mutation for t {}", m);
+        }
+
+        // FIXME: stop using random parameters
+        _proxy.mutate_locally(std::vector<mutation>{std::move(m)}, db::no_timeout).then_wrapped([] (auto&& f) {
+            srn.warn("Fired a mutate() continuation and finished now");
+            try {
+                f.get();
+                srn.warn("ok");
+                return make_ready_future<>();
+            } catch (no_such_column_family&) {
+                srn.warn("No such column family");
+                return make_ready_future<>();
+            } catch (...) {
+                throw;
+            }
+            return make_ready_future<>();
+        }).get();
+        return stop_iteration::no;
+    }
+    void consume_end_of_stream() {
+        srn.warn("END OF STREAM");
+    }
+};
 
 /*
  * This reader takes a get_next_fragment generator that produces mutation_fragment_opt which is returned by
@@ -151,6 +219,7 @@ void stream_session::init_messaging_service_handler() {
         });
     });
     ms().register_stream_mutation([] (const rpc::client_info& cinfo, UUID plan_id, frozen_mutation fm, unsigned dst_cpu_id, rpc::optional<bool> fragmented_opt) {
+        srn.warn("REGISTER STREAM MUTATION");
         auto from = netw::messaging_service::get_source(cinfo);
         auto src_cpu_id = from.cpu_id;
         auto fragmented = fragmented_opt && *fragmented_opt;
@@ -206,16 +275,20 @@ void stream_session::init_messaging_service_handler() {
                     distribute_reader_and_consume_on_shards(s, dht::global_partitioner(),
                         make_flat_mutation_reader<generating_reader>(s, std::move(get_next_mutation_fragment)),
                         [cf_id, plan_id, s, estimated_partitions] (flat_mutation_reader reader) {
+
+                            srn.warn("in distributed reader");
+
                             auto& cf = service::get_local_storage_service().db().local().find_column_family(cf_id);
                             sstables::sstable_writer_config sst_cfg;
                             sst_cfg.large_partition_handler = cf.get_large_partition_handler();
                             sstables::shared_sstable sst = cf.make_streaming_sstable_for_write();
                             schema_ptr s = reader.schema();
-                            auto& pc = service::get_local_streaming_write_priority();
-                            return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
-                                return sst->open_data();
-                            }).then([&cf, sst] {
-                                return cf.add_sstable_and_update_cache(sst);
+                            //auto& pc = service::get_local_streaming_write_priority();
+
+                              srn.warn("preparing a hacked reader");
+
+                            return seastar::async([s, reader = std::move(reader)]() mutable {
+                                return reader.consume_in_thread(mutation_writing_consumer(s, service::get_local_storage_proxy()), db::no_timeout);
                             });
                         }
                     ).then_wrapped([s, plan_id, from, sink, estimated_partitions] (future<uint64_t> f) mutable {
