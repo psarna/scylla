@@ -66,6 +66,7 @@
 #include "service/migration_manager.hh"
 #include "service/storage_service.hh"
 #include "view_info.hh"
+#include "view_updating_consumer.hh"
 
 using namespace std::chrono_literals;
 
@@ -1605,6 +1606,16 @@ future<> view_builder::wait_until_built(const sstring& ks_name, const sstring& v
         auto v = std::pair(std::move(ks_name), std::move(view_name));
         return builder._build_notifiers[std::move(v)].get_shared_future(timeout);
     });
+}
+
+stop_iteration view_updating_consumer::consume_end_of_partition() {
+    try {
+        auto lock_holder = _table->push_view_replica_updates(_schema, std::move(*_m), db::no_timeout).get();
+    } catch (...) {
+        vlogger.warn("Failed to push replica updates for table {}.{}: {}", _schema->ks_name(), _schema->cf_name(), std::current_exception());
+    }
+    _m.reset();
+    return stop_iteration::no;
 }
 
 } // namespace view
