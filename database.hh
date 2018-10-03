@@ -644,7 +644,10 @@ public:
     flat_mutation_reader make_streaming_reader(schema_ptr schema,
             const dht::partition_range_vector& ranges) const;
 
-    sstables::shared_sstable make_streaming_sstable_for_write();
+    sstables::shared_sstable make_streaming_sstable_for_write(sstring subdir = {});
+    inline sstables::shared_sstable make_streaming_staging_sstable() {
+        return make_streaming_sstable_for_write("staging");
+    }
 
     mutation_source as_mutation_source() const;
 
