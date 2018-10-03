@@ -297,6 +297,8 @@ public:
 
 class table;
 using column_family = table;
+struct sstable_is_staging_tag { };
+using sstable_is_staging = bool_class<sstable_is_staging_tag>;
 
 class table : public enable_lw_shared_from_this<table> {
 public:
@@ -496,7 +498,7 @@ private:
     // Cache must be synchronized atomically with this, otherwise write atomicity may not be respected.
     // Doesn't trigger compaction.
     // Strong exception guarantees.
-    void add_sstable(sstables::shared_sstable sstable, const std::vector<unsigned>& shards_for_the_sstable);
+    void add_sstable(sstables::shared_sstable sstable, const std::vector<unsigned>& shards_for_the_sstable, sstable_is_staging staging = sstable_is_staging::no);
     // returns an empty pointer if sstable doesn't belong to current shard.
     future<sstables::shared_sstable> open_sstable(sstables::foreign_sstable_open_info info, sstring dir,
         int64_t generation, sstables::sstable_version_types v, sstables::sstable_format_types f);
