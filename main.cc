@@ -749,6 +749,16 @@ int main(int ac, char** av) {
                 local_proxy.start_hints_manager(gms::get_local_gossiper().shared_from_this(), service::get_local_storage_service().shared_from_this());
             }).get();
 
+
+            //FIXME(sarna): Better place for this one
+            db.invoke_on_all([] (database& db) {
+                return parallel_for_each(db.get_non_system_column_families(), [] (lw_shared_ptr<table> table) {
+                    supervisor::notify("SARNA: Launching generate_mv_updates for non system tables");
+                    return table->generate_mv_updates_from_staging_sstables(service::get_local_storage_proxy());
+                });
+            }).get();
+
+
             static sharded<db::view::view_builder> view_builder;
             if (cfg->view_building()) {
                 supervisor::notify("starting the view builder");
