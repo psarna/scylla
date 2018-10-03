@@ -60,6 +60,7 @@
 #include "schema_registry.hh"
 #include "multishard_writer.hh"
 #include "sstables/sstables.hh"
+#include "db/view/view_updating_consumer.hh"
 
 namespace streaming {
 
@@ -209,13 +210,23 @@ void stream_session::init_messaging_service_handler() {
                             auto& cf = service::get_local_storage_service().db().local().find_column_family(cf_id);
                             sstables::sstable_writer_config sst_cfg;
                             sst_cfg.large_partition_handler = cf.get_large_partition_handler();
-                            sstables::shared_sstable sst = cf.make_streaming_sstable_for_write();
+                            sstables::shared_sstable sst = cf.views().empty() ? cf.make_streaming_sstable_for_write() : cf.make_streaming_staging_sstable();
                             schema_ptr s = reader.schema();
                             auto& pc = service::get_local_streaming_write_priority();
                             return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
                                 return sst->open_data();
                             }).then([&cf, sst] {
-                                return cf.add_sstable_and_update_cache(sst);
+                                return cf.add_sstable_and_update_cache(sst, sstable_is_staging(!cf.views().empty()));
+                            }).then([&cf, s, sst]() -> future<> {
+                                if (cf.views().empty()) {
+                                    return make_ready_future<>();
+                                }
+                                flat_mutation_reader staging_sstable_reader = sst->read_rows_flat(s);
+                                return seastar::async([s, staging_sstable_reader = std::move(staging_sstable_reader)]() mutable {
+                                    staging_sstable_reader.consume_in_thread(db::view::view_updating_consumer(s, service::get_local_storage_proxy()), db::no_timeout);
+                                }).then([&cf, s, sst] {
+                                    return cf.move_sstable_from_staging(sst);
+                                });
                             });
                         }
                     ).then_wrapped([s, plan_id, from, sink, estimated_partitions] (future<uint64_t> f) mutable {
