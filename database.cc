@@ -4576,7 +4576,7 @@ future<row_locker::lock_holder> table::push_view_replica_updates(const schema_pt
         std::move(slice),
         std::move(m),
         [base, views = std::move(views), lock = std::move(lock), this, timeout] (auto& pk, auto& slice, auto& m) mutable {
-            auto reader = this->make_reader(
+            auto reader = this->make_reader_without_staging_sstables(
                 base,
                 pk,
                 slice,
