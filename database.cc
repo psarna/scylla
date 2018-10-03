@@ -784,7 +784,7 @@ table::open_sstable(sstables::foreign_sstable_open_info info, sstring dir, int64
     });
 }
 
-void table::load_sstable(sstables::shared_sstable& sst, bool reset_level) {
+void table::load_sstable(sstables::shared_sstable& sst, bool reset_level, sstable_is_staging staging) {
     if (schema()->is_counter() && !sst->has_scylla_component()) {
         throw std::runtime_error("Loading non-Scylla SSTables containing counters is not supported. Use sstableloader instead.");
     }
@@ -808,7 +808,7 @@ void table::load_sstable(sstables::shared_sstable& sst, bool reset_level) {
         // the sstables to level 0.
         sst->set_sstable_level(0);
     }
-    add_sstable(sst, std::move(shards));
+    add_sstable(sst, std::move(shards), staging);
 }
 
 void table::update_stats_for_new_sstable(uint64_t disk_space_used_by_sstable, const std::vector<unsigned>& shards_for_the_sstable) noexcept {
