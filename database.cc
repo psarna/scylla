@@ -1964,7 +1964,7 @@ future<> distributed_loader::load_new_sstables(distributed<database>& db, sstrin
     });
 }
 
-future<sstables::entry_descriptor> distributed_loader::probe_file(distributed<database>& db, sstring sstdir, sstring fname) {
+future<sstables::entry_descriptor> distributed_loader::probe_file(distributed<database>& db, sstring sstdir, sstring fname, sstable_is_staging staging) {
     using namespace sstables;
 
     entry_descriptor comps = entry_descriptor::make_descriptor(sstdir, fname);
@@ -1975,7 +1975,7 @@ future<sstables::entry_descriptor> distributed_loader::probe_file(distributed<da
     if (comps.component != component_type::TOC) {
         return make_ready_future<entry_descriptor>(std::move(comps));
     }
-    auto cf_sstable_open = [sstdir, comps, fname] (column_family& cf, sstables::foreign_sstable_open_info info) {
+    auto cf_sstable_open = [sstdir, comps, fname, staging] (column_family& cf, sstables::foreign_sstable_open_info info) {
         cf.update_sstables_known_generation(comps.generation);
         {
             auto i = boost::range::find_if(*cf._sstables->all(), [gen = comps.generation] (sstables::shared_sstable sst) { return sst->generation() == gen; });
@@ -1985,11 +1985,14 @@ future<sstables::entry_descriptor> distributed_loader::probe_file(distributed<da
                                                 comps.generation, new_toc, (*i)->toc_filename()));
             }
         }
-        return cf.open_sstable(std::move(info), sstdir, comps.generation, comps.version, comps.format).then([&cf] (sstables::shared_sstable sst) mutable {
+        return cf.open_sstable(std::move(info), sstdir, comps.generation, comps.version, comps.format).then([&cf, staging] (sstables::shared_sstable sst) mutable {
             if (sst) {
-                return cf.get_row_cache().invalidate([&cf, sst = std::move(sst)] () mutable noexcept {
+                return cf.get_row_cache().invalidate([&cf, sst, staging] () mutable noexcept {
                     // FIXME: this is not really noexcept, but we need to provide strong exception guarantees.
-                    cf.load_sstable(sst);
+                    cf.load_sstable(sst, false, staging);
+                    if (staging) {
+                        cf.mark_sstable_needs_mv_update_generation(sst);
+                    }
                 });
             }
             return make_ready_future<>();
