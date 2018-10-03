@@ -60,6 +60,8 @@
 #include "schema_registry.hh"
 #include "multishard_writer.hh"
 #include "sstables/sstables.hh"
+#include "db/view/view_updating_consumer.hh"
+#include "db/system_keyspace.hh"
 
 namespace streaming {
 
@@ -193,8 +195,8 @@ void stream_session::init_messaging_service_handler() {
         auto from = netw::messaging_service::get_source(cinfo);
         auto reason = reason_opt ? *reason_opt: stream_reason::unspecified;
         sslog.trace("Got stream_mutation_fragments from {} reason {}", from, int(reason));
-        return with_scheduling_group(service::get_local_storage_service().db().local().get_streaming_scheduling_group(), [from, estimated_partitions, plan_id, schema_id, cf_id, source] () mutable {
-                return service::get_schema_for_write(schema_id, from).then([from, estimated_partitions, plan_id, schema_id, cf_id, source] (schema_ptr s) mutable {
+        return with_scheduling_group(service::get_local_storage_service().db().local().get_streaming_scheduling_group(), [from, estimated_partitions, plan_id, schema_id, cf_id, source, reason] () mutable {
+                return service::get_schema_for_write(schema_id, from).then([from, estimated_partitions, plan_id, schema_id, cf_id, source, reason] (schema_ptr s) mutable {
                     auto sink = ms().make_sink_for_stream_mutation_fragments(source);
                     auto get_next_mutation_fragment = [source, plan_id, from, s] () mutable {
                         return source().then([plan_id, from, s] (stdx::optional<std::tuple<frozen_mutation_fragment>> fmf_opt) mutable {
@@ -211,17 +213,44 @@ void stream_session::init_messaging_service_handler() {
                     };
                     distribute_reader_and_consume_on_shards(s, dht::global_partitioner(),
                         make_flat_mutation_reader<generating_reader>(s, std::move(get_next_mutation_fragment)),
-                        [cf_id, plan_id, estimated_partitions] (flat_mutation_reader reader) {
+                        [cf_id, plan_id, estimated_partitions, reason] (flat_mutation_reader reader) {
                             auto& cf = service::get_local_storage_service().db().local().find_column_family(cf_id);
-                            sstables::sstable_writer_config sst_cfg;
-                            sst_cfg.large_partition_handler = cf.get_large_partition_handler();
-                            sstables::shared_sstable sst = cf.make_streaming_sstable_for_write();
-                            schema_ptr s = reader.schema();
-                            auto& pc = service::get_local_streaming_write_priority();
-                            return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
-                                return sst->open_data();
-                            }).then([&cf, sst] {
-                                return cf.add_sstable_and_update_cache(sst);
+
+                            auto check_staging = make_ready_future<sstable_is_staging>(sstable_is_staging(reason == stream_reason::repair));
+                            if (reason != stream_reason::repair && !cf.views().empty()) {
+                                check_staging = db::system_keyspace::load_built_views().then([&cf] (std::vector<db::system_keyspace::view_name>&& view_names) {
+                                    for (const db::system_keyspace::view_name& view_name : view_names) {
+                                        auto matching_view = boost::find_if(cf.views(), [&] (view_ptr v) {
+                                            return v->ks_name() == view_name.first && v->cf_name() == view_name.second;
+                                        });
+                                        if (matching_view == cf.views().end()) {
+                                            return sstable_is_staging::yes;
+                                        }
+                                    }
+                                    return sstable_is_staging::no;
+                                });
+                            }
+
+                            return check_staging.then([&cf, estimated_partitions, reader = std::move(reader)] (sstable_is_staging use_staging) mutable {
+                                sstables::shared_sstable sst = use_staging ? cf.make_streaming_sstable_for_write() : cf.make_streaming_staging_sstable();
+                                schema_ptr s = reader.schema();
+                                sstables::sstable_writer_config sst_cfg;
+                                sst_cfg.large_partition_handler = cf.get_large_partition_handler();
+                                auto& pc = service::get_local_streaming_write_priority();
+                                return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
+                                    return sst->open_data();
+                                }).then([&cf, sst] {
+                                    return cf.add_sstable_and_update_cache(sst, sstable_is_staging(!cf.views().empty()));
+                                }).then([&cf, s, sst, use_staging]() -> future<> {
+                                    if (!use_staging) {
+                                        return make_ready_future<>();
+                                    }
+                                    flat_mutation_reader staging_sstable_reader = sst->read_rows_flat(s);
+                                    return seastar::async([s, sst, &cf, staging_sstable_reader = std::move(staging_sstable_reader)]() mutable {
+                                        staging_sstable_reader.consume_in_thread(db::view::view_updating_consumer(s, service::get_local_storage_proxy()), db::no_timeout);
+                                        cf.move_sstable_from_staging_in_thread(sst);
+                                    });
+                                });
                             });
                         }
                     ).then_wrapped([s, plan_id, from, sink, estimated_partitions] (future<uint64_t> f) mutable {
