@@ -2016,7 +2016,7 @@ future<sstables::entry_descriptor> distributed_loader::probe_file(distributed<da
     });
 }
 
-future<> distributed_loader::populate_column_family(distributed<database>& db, sstring sstdir, sstring ks, sstring cf) {
+future<> distributed_loader::populate_column_family(distributed<database>& db, sstring sstdir, sstring ks, sstring cf, sstable_is_staging staging) {
     // We can catch most errors when we try to load an sstable. But if the TOC
     // file is the one missing, we won't try to load the sstable at all. This
     // case is still an invalid case, but it is way easier for us to treat it
@@ -2036,10 +2036,10 @@ future<> distributed_loader::populate_column_family(distributed<database>& db, s
 
     auto verifier = make_lw_shared<std::unordered_map<unsigned long, sstable_descriptor>>();
 
-    return do_with(std::vector<future<>>(), [&db, sstdir = std::move(sstdir), verifier, ks, cf] (std::vector<future<>>& futures) {
-        return lister::scan_dir(sstdir, { directory_entry_type::regular }, [&db, verifier, &futures] (lister::path sstdir, directory_entry de) {
+    return do_with(std::vector<future<>>(), [&db, sstdir = std::move(sstdir), verifier, ks, cf, staging] (std::vector<future<>>& futures) {
+        return lister::scan_dir(sstdir, { directory_entry_type::regular }, [&db, verifier, &futures, staging] (lister::path sstdir, directory_entry de) {
             // FIXME: The secondary indexes are in this level, but with a directory type, (starting with ".")
-            auto f = distributed_loader::probe_file(db, sstdir.native(), de.name).then([verifier, sstdir, de] (auto entry) {
+            auto f = distributed_loader::probe_file(db, sstdir.native(), de.name, staging).then([verifier, sstdir, de] (auto entry) {
                 if (entry.component == component_type::TemporaryStatistics) {
                     return remove_file(sstables::sstable::filename(sstdir.native(), entry.ks, entry.cf, entry.version, entry.generation,
                         entry.format, component_type::TemporaryStatistics));
@@ -2115,6 +2115,8 @@ future<> distributed_loader::populate_column_family(distributed<database>& db, s
                 }
                 return make_ready_future<>();
             });
+        }).then([]() {
+
         });
     });
 
