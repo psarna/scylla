@@ -3012,6 +3012,7 @@ keyspace::make_directory_for_column_family(const sstring& name, utils::UUID uuid
             io_check(recursive_touch_directory, cfdir).get();
         }
         io_check(touch_directory, cfdirs[0] + "/upload").get();
+        io_check(touch_directory, cfdirs[0] + "/staging").get();
     });
 }
 
