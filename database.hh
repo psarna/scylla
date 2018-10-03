@@ -1452,7 +1452,7 @@ public:
         const io_priority_class& pc = default_priority_class());
     static future<> load_new_sstables(distributed<database>& db, sstring ks, sstring cf, std::vector<sstables::entry_descriptor> new_tables);
     static future<std::vector<sstables::entry_descriptor>> flush_upload_dir(distributed<database>& db, sstring ks_name, sstring cf_name);
-    static future<sstables::entry_descriptor> probe_file(distributed<database>& db, sstring sstdir, sstring fname);
+    static future<sstables::entry_descriptor> probe_file(distributed<database>& db, sstring sstdir, sstring fname, sstable_is_staging staging = sstable_is_staging::no);
     static future<> populate_column_family(distributed<database>& db, sstring sstdir, sstring ks, sstring cf);
     static future<> populate_keyspace(distributed<database>& db, sstring datadir, sstring ks_name);
     static future<> init_system_keyspace(distributed<database>& db);
