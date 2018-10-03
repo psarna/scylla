@@ -643,7 +643,8 @@ table::make_reader(schema_ptr s,
                            const io_priority_class& pc,
                            tracing::trace_state_ptr trace_state,
                            streamed_mutation::forwarding fwd,
-                           mutation_reader::forwarding fwd_mr) const {
+                           mutation_reader::forwarding fwd_mr,
+                           skip_staging should_skip_staging) const {
     if (_virtual_reader) {
         return (*_virtual_reader).make_reader(s, range, slice, pc, trace_state, fwd, fwd_mr);
     }
@@ -675,10 +676,17 @@ table::make_reader(schema_ptr s,
         readers.emplace_back(mt->make_flat_reader(s, range, slice, pc, trace_state, fwd, fwd_mr));
     }
 
-    if (_config.enable_cache) {
+    lw_shared_ptr<sstables::sstable_set> sstables_without_staging;
+    if (should_skip_staging && !_sstables_staging.empty()) {
+        sstables_without_staging = ::make_lw_shared<sstables::sstable_set>(*_sstables);
+        for (const auto& sst : _sstables_staging | boost::adaptors::map_values) {
+            sstables_without_staging->erase(sst);
+        }
+    }
+    if (_config.enable_cache && (!should_skip_staging || _sstables_staging.empty())) { //FIXME(sarna): Bad idea for performance, here for testing purposes
         readers.emplace_back(_cache.make_reader(s, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     } else {
-        readers.emplace_back(make_sstable_reader(s, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
+        readers.emplace_back(make_sstable_reader(s, sstables_without_staging ? sstables_without_staging : _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     }
 
     return make_combined_reader(s, std::move(readers), fwd, fwd_mr);

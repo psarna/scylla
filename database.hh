@@ -299,6 +299,8 @@ class table;
 using column_family = table;
 struct sstable_is_staging_tag { };
 using sstable_is_staging = bool_class<sstable_is_staging_tag>;
+struct skip_staging_tag { };
+using skip_staging = bool_class<skip_staging_tag>;
 
 class table : public enable_lw_shared_from_this<table> {
 public:
@@ -631,7 +633,8 @@ public:
             const io_priority_class& pc = default_priority_class(),
             tracing::trace_state_ptr trace_state = nullptr,
             streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
-            mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes) const;
+            mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes,
+            skip_staging should_skip_staging = skip_staging::no) const;
 
     flat_mutation_reader make_reader(schema_ptr schema, const dht::partition_range& range = query::full_partition_range) const {
         auto& full_slice = schema->full_slice();
