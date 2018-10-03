@@ -62,6 +62,7 @@
 #include "service/cache_hitrate_calculator.hh"
 #include "sstables/compaction_manager.hh"
 #include "sstables/sstables.hh"
+#include <db/view/view_update_from_staging_generator.hh>
 
 seastar::metrics::metric_groups app_metrics;
 
@@ -754,6 +755,11 @@ int main(int ac, char** av) {
             proxy.invoke_on_all([] (service::storage_proxy& local_proxy) {
                 local_proxy.allow_replaying_hints();
             }).get();
+
+            static sharded<db::view::view_update_from_staging_generator> view_update_from_staging_generator;
+            supervisor::notify("Launching generate_mv_updates for non system tables");
+            view_update_from_staging_generator.start(std::ref(db), std::ref(proxy)).get();
+            view_update_from_staging_generator.invoke_on_all(&db::view::view_update_from_staging_generator::start).get();
 
             static sharded<db::view::view_builder> view_builder;
             if (cfg->view_building()) {
