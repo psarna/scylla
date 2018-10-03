@@ -684,6 +684,32 @@ table::make_reader(schema_ptr s,
     return make_combined_reader(s, std::move(readers), fwd, fwd_mr);
 }
 
+flat_mutation_reader
+table::make_reader_without_staging_sstables(schema_ptr s,
+                           const dht::partition_range& range,
+                           const query::partition_slice& slice,
+                           const io_priority_class& pc,
+                           tracing::trace_state_ptr trace_state,
+                           streamed_mutation::forwarding fwd,
+                           mutation_reader::forwarding fwd_mr) const {
+    std::vector<flat_mutation_reader> readers;
+    readers.reserve(_memtables->size() + 1);
+
+    for (auto&& mt : *_memtables) {
+        readers.emplace_back(mt->make_flat_reader(s, range, slice, pc, trace_state, fwd, fwd_mr));
+    }
+
+    lw_shared_ptr<sstables::sstable_set> effective_sstables = _sstables;
+    if (!_sstables_staging.empty()) {
+        effective_sstables = ::make_lw_shared<sstables::sstable_set>(*_sstables);
+        for (const auto& sst : _sstables_staging | boost::adaptors::map_values) {
+            effective_sstables->erase(sst);
+        }
+    }
+    readers.emplace_back(make_sstable_reader(s, effective_sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
+    return make_combined_reader(s, std::move(readers), fwd, fwd_mr);
+}
+
 sstables::shared_sstable table::make_streaming_sstable_for_write(sstring subdir) {
     sstring dir = _config.datadir;
     if (!subdir.empty()) {
