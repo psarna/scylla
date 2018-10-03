@@ -4519,7 +4519,11 @@ future<row_locker::lock_holder> table::push_view_replica_updates(const schema_pt
                 base,
                 pk,
                 slice,
-                service::get_local_sstable_query_read_priority());
+                service::get_local_sstable_query_read_priority(),
+                nullptr,
+                streamed_mutation::forwarding::no,
+                mutation_reader::forwarding::yes,
+                skip_staging::yes);
             return this->generate_and_propagate_view_updates(base, std::move(views), std::move(m), std::move(reader), timeout).then([lock = std::move(lock)] () mutable {
                 // return the local partition/row lock we have taken so it
                 // remains locked until the caller is done modifying this
