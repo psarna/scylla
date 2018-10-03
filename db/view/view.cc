@@ -66,6 +66,7 @@
 #include "service/migration_manager.hh"
 #include "service/storage_service.hh"
 #include "view_info.hh"
+#include "view_updating_consumer.hh"
 
 using namespace std::chrono_literals;
 

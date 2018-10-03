@@ -164,3 +164,16 @@ future<row_locker::lock_holder> table::push_view_replica_updates(const schema_pt
         });
     });
 }
+
+stop_iteration db::view::view_updating_consumer::consume_end_of_partition() {
+    if (_as.abort_requested()) {
+        return stop_iteration::yes;
+    }
+    try {
+        auto lock_holder = _table->stream_view_replica_updates(_schema, std::move(*_m), db::no_timeout, _excluded_sstable).get();
+    } catch (...) {
+        tlogger.warn("Failed to push replica updates for table {}.{}: {}", _schema->ks_name(), _schema->cf_name(), std::current_exception());
+    }
+    _m.reset();
+    return stop_iteration::no;
+}
