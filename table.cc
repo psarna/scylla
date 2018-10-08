@@ -18,3 +18,19 @@
  * You should have received a copy of the GNU General Public License
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
+
+#include "database.hh"
+#include "sstables/sstables.hh"
+
+static logging::logger tlogger("table");
+
+void table::move_sstable_from_staging_in_thread(sstables::shared_sstable sst) {
+    auto gen = calculate_generation_for_new_table();
+    try {
+        sst->move_to_new_dir_in_thread(dir(), gen);
+    } catch (...) {
+        tlogger.warn("Failed to move sstable {} from staging: {}", sst->get_filename(), std::current_exception());
+        return;
+    }
+    _sstables_staging.erase(sst->generation());
+}
