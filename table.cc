@@ -28,3 +28,29 @@ void table::mark_sstable_needs_mv_update_generation(sstables::shared_sstable& ss
 void table::unmark_sstable_needs_mv_update_generation(sstables::shared_sstable& sst) {
     _sstables_staging_need_mv_update_generation.erase(sst->generation());
 }
+
+future<> table::move_sstable_from_staging(sstables::shared_sstable sst) {
+    auto gen = calculate_generation_for_new_table();
+    return sst->read_toc().then([sst] {
+        return sst->mutate_sstable_level(0);
+    }).then([this, sst, gen] {
+        return sst->create_links(dir(), gen);
+    }).then([sst] {
+        return sstables::remove_by_toc_name(sst->toc_filename(), [] (std::exception_ptr eptr) {});
+    }).then([this, sst, gen]() mutable {
+        return get_row_cache().invalidate([this, sst, gen] {
+            _sstables_staging.erase(sst->generation());
+
+            auto new_sst = sstables::make_sstable(_schema, dir(), gen, sst->get_version(), sstables::sstable::format_types::big);
+
+            return new_sst->load().then([this, sst, new_sst] () mutable {
+                unmark_sstable_needs_mv_update_generation(sst);
+                _sstables->erase(sst);
+                load_sstable(new_sst, true);
+                trigger_compaction();
+            }).handle_exception([] (std::exception_ptr ep) {
+                tlogger.warn("Loading staging sstable failed: {}", ep);
+            });
+        });
+    });
+}
