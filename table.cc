@@ -21,6 +21,10 @@
 
 #include "database.hh"
 #include "sstables/sstables.hh"
+#include "sstables/remove.hh"
+#include "db/view/view_updating_consumer.hh"
+
+static logging::logger tlogger("table");
 
 void table::mark_sstable_needs_mv_update_generation(sstables::shared_sstable& sst) {
     _sstables_staging_need_mv_update_generation.emplace(sst->generation(), sst);
@@ -51,6 +55,18 @@ future<> table::move_sstable_from_staging(sstables::shared_sstable sst) {
             }).handle_exception([] (std::exception_ptr ep) {
                 tlogger.warn("Loading staging sstable failed: {}", ep);
             });
+        });
+    });
+}
+
+future<> table::generate_mv_updates_from_staging_sstables(service::storage_proxy& proxy) {
+    return do_for_each(get_sstables_for_mv_update_generation(), [&proxy, this] (auto sst_entry) {
+        sstables::shared_sstable sst = sst_entry.second;
+        flat_mutation_reader staging_sstable_reader = sst->read_rows_flat(_schema);
+        return seastar::async([this, &proxy, staging_sstable_reader = std::move(staging_sstable_reader)]() mutable {
+            staging_sstable_reader.consume_in_thread(db::view::view_updating_consumer(_schema, proxy), db::no_timeout);
+        }).then([this, sst = std::move(sst)] {
+            return move_sstable_from_staging(std::move(sst));
         });
     });
 }

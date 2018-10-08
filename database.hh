@@ -497,6 +497,8 @@ public:
     std::unordered_map<uint64_t, sstables::shared_sstable>& get_sstables_for_mv_update_generation() {
         return _sstables_staging_need_mv_update_generation;
     }
+    future<> move_sstable_from_staging(sstables::shared_sstable sst);
+    future<> generate_mv_updates_from_staging_sstables(service::storage_proxy& proxy);
 private:
     void update_stats_for_new_sstable(uint64_t disk_space_used_by_sstable, const std::vector<unsigned>& shards_for_the_sstable) noexcept;
     // Adds new sstable to the set of sstables
