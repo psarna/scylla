@@ -491,6 +491,7 @@ private:
 public:
     future<> add_sstable_and_update_cache(sstables::shared_sstable sst, sstable_is_staging staging = sstable_is_staging::no);
     void move_sstable_from_staging_in_thread(sstables::shared_sstable sst);
+    future<> generate_mv_updates_from_staging_sstables(service::storage_proxy& proxy, const seastar::abort_source& as);
 private:
     void update_stats_for_new_sstable(uint64_t disk_space_used_by_sstable, const std::vector<unsigned>& shards_for_the_sstable) noexcept;
     // Adds new sstable to the set of sstables

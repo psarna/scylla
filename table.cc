@@ -21,6 +21,9 @@
 
 #include "database.hh"
 #include "sstables/sstables.hh"
+#include "sstables/remove.hh"
+#include "db/view/view_updating_consumer.hh"
+#include <boost/range/adaptors.hpp>
 
 static logging::logger tlogger("table");
 
@@ -32,4 +35,17 @@ void table::move_sstable_from_staging_in_thread(sstables::shared_sstable sst) {
         return;
     }
     _sstables_staging.erase(sst->generation());
+}
+
+future<> table::generate_mv_updates_from_staging_sstables(service::storage_proxy& proxy, const seastar::abort_source& as) {
+    return seastar::async([this, &proxy, &as]() mutable {
+        for (sstables::shared_sstable sst : _sstables_staging | boost::adaptors::map_values | boost::adaptors::filtered([] (const sstables::shared_sstable& sst) { return sst->marked_for_async_view_update(); })) {
+            if (as.abort_requested()) {
+                return;
+            }
+            flat_mutation_reader staging_sstable_reader = sst->read_rows_flat(_schema);
+            staging_sstable_reader.consume_in_thread(db::view::view_updating_consumer(_schema, proxy), db::no_timeout);
+            move_sstable_from_staging_in_thread(std::move(sst));
+        }
+    });
 }
