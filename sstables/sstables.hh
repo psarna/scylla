@@ -195,6 +195,10 @@ public:
     future<> open_data();
     future<> update_info_for_opened_data();
 
+    void set_dir(sstring dir) {
+        _dir = std::move(dir);
+    }
+
     future<> set_generation(int64_t generation);
 
     int64_t generation() const {
