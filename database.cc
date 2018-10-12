@@ -537,6 +537,39 @@ create_single_key_sstable_reader(column_family* cf,
     return make_combined_reader(schema, std::move(readers), fwd, fwd_mr);
 }
 
+static flat_mutation_reader
+make_local_shard_excluding_sstable_reader(schema_ptr s,
+        lw_shared_ptr<sstables::sstable_set> sstables,
+        const dht::partition_range& pr,
+        const query::partition_slice& slice,
+        const io_priority_class& pc,
+        reader_resource_tracker resource_tracker,
+        tracing::trace_state_ptr trace_state,
+        streamed_mutation::forwarding fwd,
+        mutation_reader::forwarding fwd_mr,
+        const std::unordered_map<uint64_t, sstables::shared_sstable>& excluded_sstables,
+        sstables::read_monitor_generator& monitor_generator = sstables::default_read_monitor_generator())
+{
+    auto reader_factory_fn = [s, &slice, &pc, resource_tracker, fwd, fwd_mr, &monitor_generator, &excluded_sstables] (sstables::shared_sstable& sst, const dht::partition_range& pr) {
+        if (excluded_sstables.count(sst->generation()) != 0) {
+            return make_empty_flat_reader(s);
+        }
+        flat_mutation_reader reader = sst->read_range_rows_flat(s, pr, slice, pc, resource_tracker, fwd, fwd_mr, monitor_generator(sst));
+        if (sst->is_shared()) {
+            using sig = bool (&)(const dht::decorated_key&);
+            reader = make_filtering_reader(std::move(reader), sig(belongs_to_current_shard));
+        }
+        return reader;
+    };
+    return make_combined_reader(s, std::make_unique<incremental_reader_selector>(s,
+                    std::move(sstables),
+                    pr,
+                    std::move(trace_state),
+                    std::move(reader_factory_fn)),
+            fwd,
+            fwd_mr);
+}
+
 flat_mutation_reader
 table::make_sstable_reader(schema_ptr s,
                                    lw_shared_ptr<sstables::sstable_set> sstables,
@@ -4695,21 +4728,8 @@ flat_mutation_reader make_local_shard_sstable_reader(schema_ptr s,
         mutation_reader::forwarding fwd_mr,
         sstables::read_monitor_generator& monitor_generator)
 {
-    auto reader_factory_fn = [s, &slice, &pc, resource_tracker, fwd, fwd_mr, &monitor_generator] (sstables::shared_sstable& sst, const dht::partition_range& pr) {
-        flat_mutation_reader reader = sst->read_range_rows_flat(s, pr, slice, pc, resource_tracker, fwd, fwd_mr, monitor_generator(sst));
-        if (sst->is_shared()) {
-            using sig = bool (&)(const dht::decorated_key&);
-            reader = make_filtering_reader(std::move(reader), sig(belongs_to_current_shard));
-        }
-        return reader;
-    };
-    return make_combined_reader(s, std::make_unique<incremental_reader_selector>(s,
-                    std::move(sstables),
-                    pr,
-                    std::move(trace_state),
-                    std::move(reader_factory_fn)),
-            fwd,
-            fwd_mr);
+    static thread_local const std::unordered_map<uint64_t, sstables::shared_sstable> empty_exclusion_list;
+    return make_local_shard_excluding_sstable_reader(std::move(s), std::move(sstables), pr, slice, pc, resource_tracker, trace_state, fwd, fwd_mr, empty_exclusion_list, monitor_generator);
 }
 
 flat_mutation_reader make_range_sstable_reader(schema_ptr s,
