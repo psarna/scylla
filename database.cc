@@ -520,11 +520,13 @@ create_single_key_sstable_reader(column_family* cf,
                                  reader_resource_tracker resource_tracker,
                                  tracing::trace_state_ptr trace_state,
                                  streamed_mutation::forwarding fwd,
-                                 mutation_reader::forwarding fwd_mr)
+                                 mutation_reader::forwarding fwd_mr,
+                                 const std::unordered_map<uint64_t, sstables::shared_sstable>& excluded_sstables = {})
 {
     auto key = sstables::key::from_partition_key(*schema, *pr.start()->value().key());
     auto readers = boost::copy_range<std::vector<flat_mutation_reader>>(
         filter_sstable_for_reader(sstables->select(pr), *cf, schema, key, slice)
+        | boost::adaptors::filtered([&excluded_sstables] (const sstables::shared_sstable& sstable) { return excluded_sstables.count(sstable->generation()) == 0; })
         | boost::adaptors::transformed([&] (const sstables::shared_sstable& sstable) {
             tracing::trace(trace_state, "Reading key {} from sstable {}", pr, seastar::value_of([&sstable] { return sstable->get_filename(); }));
             return sstable->read_row_flat(schema, pr.start()->value(), slice, pc, resource_tracker, fwd);
