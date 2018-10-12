@@ -580,10 +580,13 @@ table::make_sstable_reader(schema_ptr s,
                                    const io_priority_class& pc,
                                    tracing::trace_state_ptr trace_state,
                                    streamed_mutation::forwarding fwd,
-                                   mutation_reader::forwarding fwd_mr) const {
+                                   mutation_reader::forwarding fwd_mr,
+                                   exclude_staging_sstables exclude_staging) const {
     auto* semaphore = service::get_local_streaming_read_priority().id() == pc.id()
         ? _config.streaming_read_concurrency_semaphore
         : _config.read_concurrency_semaphore;
+    static thread_local const std::unordered_map<uint64_t, sstables::shared_sstable> empty_exclusion_list;
+    const std::unordered_map<uint64_t, sstables::shared_sstable>& excluded_sstables = exclude_staging ? _sstables_staging : empty_exclusion_list;
 
     // CAVEAT: if make_sstable_reader() is called on a single partition
     // we want to optimize and read exactly this partition. As a
@@ -596,7 +599,7 @@ table::make_sstable_reader(schema_ptr s,
         }
 
         if (semaphore) {
-            auto ms = mutation_source([semaphore, this, sstables=std::move(sstables)] (
+            auto ms = mutation_source([semaphore, this, sstables=std::move(sstables), &excluded_sstables] (
                         schema_ptr s,
                         const dht::partition_range& pr,
                         const query::partition_slice& slice,
@@ -606,16 +609,16 @@ table::make_sstable_reader(schema_ptr s,
                         mutation_reader::forwarding fwd_mr,
                         reader_resource_tracker tracker) {
                     return create_single_key_sstable_reader(const_cast<column_family*>(this), std::move(s), std::move(sstables),
-                                _stats.estimated_sstable_per_read, pr, slice, pc, tracker, std::move(trace_state), fwd, fwd_mr);
+                                _stats.estimated_sstable_per_read, pr, slice, pc, tracker, std::move(trace_state), fwd, fwd_mr, excluded_sstables);
                 });
             return make_restricted_flat_reader(*semaphore, std::move(ms), std::move(s), pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
         } else {
             return create_single_key_sstable_reader(const_cast<column_family*>(this), std::move(s), std::move(sstables),
-                        _stats.estimated_sstable_per_read, pr, slice, pc, no_resource_tracking(), std::move(trace_state), fwd, fwd_mr);
+                        _stats.estimated_sstable_per_read, pr, slice, pc, no_resource_tracking(), std::move(trace_state), fwd, fwd_mr, excluded_sstables);
         }
     } else {
         if (semaphore) {
-            auto ms = mutation_source([semaphore, sstables=std::move(sstables)] (
+            auto ms = mutation_source([semaphore, sstables=std::move(sstables), excluded_sstables] (
                         schema_ptr s,
                         const dht::partition_range& pr,
                         const query::partition_slice& slice,
@@ -624,13 +627,13 @@ table::make_sstable_reader(schema_ptr s,
                         streamed_mutation::forwarding fwd,
                         mutation_reader::forwarding fwd_mr,
                         reader_resource_tracker tracker) {
-                    return make_local_shard_sstable_reader(std::move(s), std::move(sstables), pr, slice, pc,
-                        tracker, std::move(trace_state), fwd, fwd_mr);
+                    return make_local_shard_excluding_sstable_reader(std::move(s), std::move(sstables), pr, slice, pc,
+                        tracker, std::move(trace_state), fwd, fwd_mr, excluded_sstables);
                 });
             return make_restricted_flat_reader(*semaphore, std::move(ms), std::move(s), pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
         } else {
-            return make_local_shard_sstable_reader(std::move(s), std::move(sstables), pr, slice, pc,
-                no_resource_tracking(), std::move(trace_state), fwd, fwd_mr);
+            return make_local_shard_excluding_sstable_reader(std::move(s), std::move(sstables), pr, slice, pc,
+                no_resource_tracking(), std::move(trace_state), fwd, fwd_mr, excluded_sstables);
         }
     }
 }
