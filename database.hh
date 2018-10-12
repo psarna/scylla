@@ -299,6 +299,8 @@ class table;
 using column_family = table;
 struct sstable_is_staging_tag { };
 using sstable_is_staging = bool_class<sstable_is_staging_tag>;
+struct exclude_staging_sstables_tag { };
+using exclude_staging_sstables = bool_class<exclude_staging_sstables_tag>;
 
 class table : public enable_lw_shared_from_this<table> {
 public:
@@ -559,7 +561,8 @@ private:
                                         const io_priority_class& pc,
                                         tracing::trace_state_ptr trace_state,
                                         streamed_mutation::forwarding fwd,
-                                        mutation_reader::forwarding fwd_mr) const;
+                                        mutation_reader::forwarding fwd_mr,
+                                        exclude_staging_sstables exclude_staging = exclude_staging_sstables::no) const;
 
     snapshot_source sstables_as_snapshot_source();
     partition_presence_checker make_partition_presence_checker(lw_shared_ptr<sstables::sstable_set>);
