@@ -3670,6 +3670,46 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
     });
 }
 
+SEASTAR_TEST_CASE(test_allow_filtering_contains) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE t (p frozen<map<text, text>>, c1 frozen<list<int>>, c2 frozen<set<double>>, v map<text, text>, id int, PRIMARY KEY(p, c1, c2));").get();
+        e.require_table_exists("ks", "t").get();
+
+        e.execute_cql("INSERT INTO t (p, c1, c2, v, id) VALUES ({'a':'a'}, [1,2,3], {0.1, 3.14}, {'x':'xyz', 'y1':'abc'}, 1);").get();
+        e.execute_cql("INSERT INTO t (p, c1, c2, v, id) VALUES ({'b':'b'}, [2,3,4], {1, 3, 4}, {'d':'def', 'y1':'abc'}, 2);").get();
+        e.execute_cql("INSERT INTO t (p, c1, c2, v, id) VALUES ({'c':'c'}, [3,4,5], {0.1, 0.2, 3}, {}, 3);").get();
+
+        auto msg = e.execute_cql("SELECT id FROM t WHERE p CONTAINS KEY 'a' ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows({
+            {int32_type->decompose(1)}
+        });
+
+        msg = e.execute_cql("SELECT id FROM t WHERE c1 CONTAINS 3 ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows({
+            {int32_type->decompose(1)},
+            {int32_type->decompose(2)},
+            {int32_type->decompose(3)}
+        });
+
+        msg = e.execute_cql("SELECT id FROM t WHERE c2 CONTAINS 0.1 ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows({
+            {int32_type->decompose(1)},
+            {int32_type->decompose(3)}
+        });
+
+        msg = e.execute_cql("SELECT id FROM t WHERE v CONTAINS KEY 'y1' ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows({
+            {int32_type->decompose(1)},
+            {int32_type->decompose(2)}
+        });
+
+        msg = e.execute_cql("SELECT id FROM t WHERE v CONTAINS KEY 'y1' AND c2 CONTAINS 3 ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows({
+            {int32_type->decompose(2)}
+        });
+    });
+}
+
 SEASTAR_TEST_CASE(test_in_restriction_on_not_last_partition_key) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.execute_cql("CREATE TABLE t (a int,b int,c int,d int,PRIMARY KEY ((a, b), c));").get();
