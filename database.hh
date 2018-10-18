@@ -1455,4 +1455,6 @@ public:
     static future<> init_non_system_keyspaces(distributed<database>& db, distributed<service::storage_proxy>& proxy);
 };
 
+bool is_reserved_keyspace_name(const sstring& ks_name);
+
 #endif /* DATABASE_HH_ */

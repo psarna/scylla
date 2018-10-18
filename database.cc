@@ -178,6 +178,14 @@ bool is_system_keyspace(const sstring& name) {
     return system_keyspaces.find(name) != system_keyspaces.end();
 }
 
+static const std::unordered_set<sstring> reserved_keyspace_names = {
+    "view_pending_updates"
+};
+
+bool is_reserved_keyspace_name(const sstring& name) {
+    return reserved_keyspace_names.count(name);
+}
+
 // Used for tests where the CF exists without a database object. We need to pass a valid
 // dirty_memory manager in that case.
 thread_local dirty_memory_manager default_dirty_memory_manager;
@@ -2482,7 +2490,7 @@ future<> distributed_loader::populate_keyspace(distributed<database>& db, sstrin
 static future<> populate(distributed<database>& db, sstring datadir) {
     return lister::scan_dir(datadir, { directory_entry_type::directory }, [&db] (lister::path datadir, directory_entry de) {
         auto& ks_name = de.name;
-        if (is_system_keyspace(ks_name)) {
+        if (is_system_keyspace(ks_name) || is_reserved_keyspace_name(ks_name)) {
             return make_ready_future<>();
         }
         return distributed_loader::populate_keyspace(db, datadir.native(), ks_name);

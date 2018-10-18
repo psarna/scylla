@@ -85,6 +85,9 @@ void create_keyspace_statement::validate(service::storage_proxy&, const service:
     if (name.length() > schema::NAME_LENGTH) {
         throw exceptions::invalid_request_exception(sprint("Keyspace names shouldn't be more than %d characters long (got \"%s\")", schema::NAME_LENGTH, _name.c_str()));
     }
+    if (is_reserved_keyspace_name(name)) {
+        throw exceptions::invalid_request_exception(sprint("{} is a reserved keyspace name and cannot be used", name));
+    }
 
     _attrs->validate();
 
