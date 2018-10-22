@@ -67,6 +67,31 @@ future<> table::generate_and_propagate_view_updates(const schema_ptr& base,
         });
 }
 
+future<> table::generate_and_propagate_view_updates_without_staging(const schema_ptr& base,
+        dht::partition_range&& pk,
+        query::partition_slice&& slice,
+        mutation&& m,
+        std::vector<view_ptr>&& views,
+        db::timeout_clock::time_point timeout) const {
+    return do_with(
+            std::move(pk),
+            std::move(slice),
+            std::move(m),
+            [this, base, views = std::move(views), timeout] (dht::partition_range& pk, query::partition_slice& slice, mutation& m) mutable {
+        auto reader = this->make_reader_without_staging_sstables(base, pk, slice, service::get_local_sstable_query_read_priority());
+        auto base_token = m.token();
+        return db::view::generate_view_updates(base,
+                std::move(views),
+                flat_mutation_reader_from_mutations({std::move(m)}),
+                std::move(reader)).then([this, timeout, base_token = std::move(base_token)] (auto&& updates) mutable {
+            return seastar::get_units(*_config.view_update_concurrency_semaphore_for_streaming, 1, timeout).then(
+                    [this, base_token = std::move(base_token), updates = std::move(updates)] (auto units) mutable {
+                db::view::mutate_MV(std::move(base_token), std::move(updates), _view_stats).handle_exception([units = std::move(units)] (auto ignored) { });
+            });
+        });
+    });
+}
+
 /**
  * Given some updates on the base table and the existing values for the rows affected by that update, generates the
  * mutations to be applied to the base table's views, and sends them to the paired view replicas.
