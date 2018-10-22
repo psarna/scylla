@@ -323,6 +323,7 @@ public:
         bool enable_metrics_reporting = false;
         db::large_partition_handler* large_partition_handler;
         db::timeout_semaphore* view_update_concurrency_semaphore;
+        db::timeout_semaphore* view_update_concurrency_semaphore_for_streaming;
     };
     struct no_commitlog {};
     struct stats {
@@ -1080,6 +1081,7 @@ public:
         seastar::scheduling_group streaming_scheduling_group;
         bool enable_metrics_reporting = false;
         db::timeout_semaphore* view_update_concurrency_semaphore = nullptr;
+        db::timeout_semaphore* view_update_concurrency_semaphore_for_streaming = nullptr;
     };
 private:
     std::unique_ptr<locator::abstract_replication_strategy> _replication_strategy;
@@ -1218,6 +1220,7 @@ private:
     semaphore _sstable_load_concurrency_sem{max_concurrent_sstable_loads()};
 
     db::timeout_semaphore _view_update_concurrency_sem{100}; // Stand-in hack for #2538
+    db::timeout_semaphore _view_update_concurrency_sem_for_streaming{100};
 
     cache_tracker _row_cache_tracker;
 
