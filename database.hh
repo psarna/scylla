@@ -892,6 +892,12 @@ private:
             mutation&& m,
             std::vector<view_ptr>&& views,
             db::timeout_clock::time_point timeout) const ;
+    future<> generate_and_propagate_view_updates_without_staging(const schema_ptr& base,
+            dht::partition_range&& pk,
+            query::partition_slice&& slice,
+            mutation&& m,
+            std::vector<view_ptr>&& views,
+            db::timeout_clock::time_point timeout) const;
 
     mutable row_locker _row_locker;
     future<row_locker::lock_holder> local_base_lock(
