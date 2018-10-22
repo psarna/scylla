@@ -120,7 +120,7 @@ future<row_locker::lock_holder> table::push_view_replica_updates(const schema_pt
     return push_view_replica_updates(s, std::move(m), timeout);
 }
 
-future<row_locker::lock_holder> table::push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout) const {
+future<row_locker::lock_holder> table::push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, exclude_staging_sstables exclude_staging) const {
     auto& base = schema();
     m.upgrade(base);
     auto views = affected_views(base, m);
@@ -151,8 +151,15 @@ future<row_locker::lock_holder> table::push_view_replica_updates(const schema_pt
     // We'll return this lock to the caller, which will release it after
     // writing the base-table update.
     future<row_locker::lock_holder> lockf = local_base_lock(base, m.decorated_key(), slice.default_row_ranges(), timeout);
-    return lockf.then([this, m = std::move(m), slice = std::move(slice), views = std::move(views), base, timeout] (row_locker::lock_holder lock) mutable {
-        return generate_and_propagate_view_updates(base, dht::partition_range::make_singular(m.decorated_key()), std::move(slice), std::move(m), std::move(views), timeout).then([lock = std::move(lock)] () mutable {
+    return lockf.then([this, m = std::move(m), slice = std::move(slice), views = std::move(views), base, timeout, exclude_staging] (row_locker::lock_holder lock) mutable {
+        future<> generate_updates = make_ready_future<>();
+        auto pk = dht::partition_range::make_singular(m.decorated_key());
+        if (exclude_staging) {
+            generate_updates = generate_and_propagate_view_updates_without_staging(base, std::move(pk), std::move(slice), std::move(m), std::move(views), timeout);
+        } else {
+            generate_updates = generate_and_propagate_view_updates(base, std::move(pk), std::move(slice), std::move(m), std::move(views), timeout);
+        }
+        return generate_updates.then([lock = std::move(lock)] () mutable {
             return std::move(lock);
         });
     });
