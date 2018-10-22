@@ -2987,6 +2987,7 @@ keyspace::make_column_family_config(const schema& s, const db::config& db_config
     cfg.enable_metrics_reporting = db_config.enable_keyspace_column_family_metrics();
     cfg.large_partition_handler = lp_handler;
     cfg.view_update_concurrency_semaphore = _config.view_update_concurrency_semaphore;
+    cfg.view_update_concurrency_semaphore_for_streaming = _config.view_update_concurrency_semaphore_for_streaming;
 
     return cfg;
 }
@@ -3784,6 +3785,7 @@ database::make_keyspace_config(const keyspace_metadata& ksm) {
     cfg.enable_metrics_reporting = _cfg->enable_keyspace_column_family_metrics();
 
     cfg.view_update_concurrency_semaphore = &_view_update_concurrency_sem;
+    cfg.view_update_concurrency_semaphore_for_streaming = &_view_update_concurrency_sem_for_streaming;
     return cfg;
 }
 
