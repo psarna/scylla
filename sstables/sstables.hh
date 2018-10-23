@@ -300,6 +300,14 @@ public:
         return _marked_for_deletion;
     }
 
+    void mark_for_async_view_update() {
+        _marked_for_async_view_update = true;
+    }
+
+    bool marked_for_async_view_update() const {
+        return _marked_for_async_view_update;
+    }
+
     void add_ancestor(int64_t generation) {
         _collector.add_ancestor(generation);
     }
@@ -469,6 +477,7 @@ private:
     filter_tracker _filter_tracker;
 
     bool _marked_for_deletion = false;
+    bool _marked_for_async_view_update = false;
 
     gc_clock::time_point _now;
 
