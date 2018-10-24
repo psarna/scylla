@@ -835,13 +835,13 @@ void table::update_stats_for_new_sstable(uint64_t disk_space_used_by_sstable, co
     }
 }
 
-void table::add_sstable(sstables::shared_sstable sstable, const std::vector<unsigned>& shards_for_the_sstable, sstable_is_staging staging) {
+void table::add_sstable(sstables::shared_sstable sstable, const std::vector<unsigned>& shards_for_the_sstable) {
     // allow in-progress reads to continue using old list
     auto new_sstables = make_lw_shared(*_sstables);
     new_sstables->insert(sstable);
     _sstables = std::move(new_sstables);
     update_stats_for_new_sstable(sstable->bytes_on_disk(), shards_for_the_sstable);
-    if (staging) {
+    if (sstable->is_staging()) {
         _sstables_staging.emplace(sstable->generation(), sstable);
     } else {
         _compaction_strategy.get_backlog_tracker().add_sstable(sstable);
