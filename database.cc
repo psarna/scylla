@@ -685,13 +685,14 @@ table::make_reader(schema_ptr s,
 }
 
 flat_mutation_reader
-table::make_reader_without_staging_sstables(schema_ptr s,
-                           const dht::partition_range& range,
-                           const query::partition_slice& slice,
-                           const io_priority_class& pc,
-                           tracing::trace_state_ptr trace_state,
-                           streamed_mutation::forwarding fwd,
-                           mutation_reader::forwarding fwd_mr) const {
+table::make_reader_excluding_sstable(schema_ptr s,
+        sstables::shared_sstable sst,
+        const dht::partition_range& range,
+        const query::partition_slice& slice,
+        const io_priority_class& pc,
+        tracing::trace_state_ptr trace_state,
+        streamed_mutation::forwarding fwd,
+        mutation_reader::forwarding fwd_mr) const {
     std::vector<flat_mutation_reader> readers;
     readers.reserve(_memtables->size() + 1);
 
@@ -699,7 +700,10 @@ table::make_reader_without_staging_sstables(schema_ptr s,
         readers.emplace_back(mt->make_flat_reader(s, range, slice, pc, trace_state, fwd, fwd_mr));
     }
 
-    readers.emplace_back(make_sstable_reader(s, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr, exclude_staging_sstables::yes));
+    auto effective_sstables = ::make_lw_shared<sstables::sstable_set>(*_sstables);
+    effective_sstables->erase(sst);
+
+    readers.emplace_back(make_sstable_reader(s, effective_sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     return make_combined_reader(s, std::move(readers), fwd, fwd_mr);
 }
 

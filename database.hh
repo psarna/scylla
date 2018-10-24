@@ -627,7 +627,8 @@ public:
             tracing::trace_state_ptr trace_state = nullptr,
             streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
             mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes) const;
-    flat_mutation_reader make_reader_without_staging_sstables(schema_ptr schema,
+    flat_mutation_reader make_reader_excluding_sstable(schema_ptr schema,
+            sstables::shared_sstable sst,
             const dht::partition_range& range,
             const query::partition_slice& slice,
             const io_priority_class& pc = default_priority_class(),
@@ -658,6 +659,7 @@ public:
     }
 
     mutation_source as_mutation_source() const;
+    mutation_source as_mutation_source_excluding(sstables::shared_sstable sst) const;
 
     void set_virtual_reader(mutation_source virtual_reader) {
         _virtual_reader = std::move(virtual_reader);
@@ -865,7 +867,8 @@ public:
     void clear_views();
     const std::vector<view_ptr>& views() const;
     future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, const frozen_mutation& fm, db::timeout_clock::time_point timeout) const;
-    future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, exclude_staging_sstables exclude_staging = exclude_staging_sstables::no) const;
+    future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout) const;
+    future<row_locker::lock_holder> stream_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, sstables::shared_sstable excluded_sstable) const;
     void add_coordinator_read_latency(utils::estimated_histogram::duration latency);
     std::chrono::milliseconds get_coordinator_read_latency_percentile(double percentile);
 
@@ -884,6 +887,7 @@ public:
             flat_mutation_reader&&);
 
 private:
+    future<row_locker::lock_holder> do_push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, mutation_source&& source) const;
     std::vector<view_ptr> affected_views(const schema_ptr& base, const mutation& update) const;
     future<> generate_and_propagate_view_updates(const schema_ptr& base,
             std::vector<view_ptr>&& views,
