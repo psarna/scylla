@@ -395,6 +395,10 @@ public:
         return !_nonprimary_key_restrictions->empty();
     }
 
+    const schema& get_schema() const {
+        return *_schema;
+    }
+
     /**
      * @return true if column is restricted by some restriction, false otherwise
      */
