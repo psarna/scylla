@@ -353,8 +353,6 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
     auto static_row_iterator = static_row.iterator();
     auto row_iterator = row.iterator();
     auto non_pk_restrictions_map = _restrictions->get_non_pk_restriction();
-    auto partition_key_restrictions_map = _restrictions->get_single_column_partition_key_restrictions();
-    auto clustering_key_restrictions_map = _restrictions->get_single_column_clustering_key_restrictions();
     for (auto&& cdef : selection.get_columns()) {
         switch (cdef->kind) {
         case column_kind::static_column:
@@ -394,6 +392,12 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
             }
             break;
         case column_kind::partition_key: {
+            if (_current_partition_key_restrictions_do_not_need_filtering
+                    || !_restrictions->get_partition_key_restrictions()->needs_filtering(_restrictions->get_schema())) {
+                _current_partition_key_restrictions_do_not_need_filtering = true;
+                continue;
+            }
+            auto partition_key_restrictions_map = _restrictions->get_single_column_partition_key_restrictions();
             auto restr_it = partition_key_restrictions_map.find(cdef);
             if (restr_it == partition_key_restrictions_map.end()) {
                 continue;
@@ -408,6 +412,10 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
             }
             break;
         case column_kind::clustering_key: {
+            if (!_restrictions->get_clustering_columns_restrictions()->needs_filtering(_restrictions->get_schema())) {
+                continue;
+            }
+            auto clustering_key_restrictions_map = _restrictions->get_single_column_clustering_key_restrictions();
             auto restr_it = clustering_key_restrictions_map.find(cdef);
             if (restr_it == clustering_key_restrictions_map.end()) {
                 continue;
