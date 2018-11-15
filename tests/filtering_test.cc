@@ -583,6 +583,55 @@ SEASTAR_TEST_CASE(test_allow_filtering_with_secondary_index) {
     });
 }
 
+SEASTAR_TEST_CASE(test_allow_filtering_limit) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE timeline (user text, c int, liked boolean, PRIMARY KEY (user, c));").get();
+        e.execute_cql(
+                "BEGIN UNLOGGED BATCH \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',1,false); \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',2,false); \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',3,true);  \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',4,false); \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',5,false); \n"
+                "insert INTO timeline (user, c, liked) VALUES ('a',6,false); \n"
+                "APPLY BATCH;"
+        ).get();
+
+        auto msg = e.execute_cql("SELECT c, liked FROM timeline WHERE liked=true ALLOW FILTERING;").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            { int32_type->decompose(3), boolean_type->decompose(true)},
+        });
+
+        msg = e.execute_cql("SELECT c, liked FROM timeline WHERE liked=false ALLOW FILTERING;").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            { int32_type->decompose(1), boolean_type->decompose(false)},
+            { int32_type->decompose(2), boolean_type->decompose(false)},
+            { int32_type->decompose(4), boolean_type->decompose(false)},
+            { int32_type->decompose(5), boolean_type->decompose(false)},
+            { int32_type->decompose(6), boolean_type->decompose(false)},
+        });
+
+        auto qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                cql3::query_options::specific_options{100, nullptr, {}, api::new_timestamp()});
+        msg = e.execute_cql("SELECT c, liked FROM timeline WHERE liked=true ALLOW FILTERING;", std::move(qo)).get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            { int32_type->decompose(3), boolean_type->decompose(true)},
+        });
+
+        qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                cql3::query_options::specific_options{100, nullptr, {}, api::new_timestamp()});
+        msg = e.execute_cql("SELECT c, liked FROM timeline WHERE liked=false ALLOW FILTERING;", std::move(qo)).get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            { int32_type->decompose(1), boolean_type->decompose(false)},
+            { int32_type->decompose(2), boolean_type->decompose(false)},
+            { int32_type->decompose(4), boolean_type->decompose(false)},
+            { int32_type->decompose(5), boolean_type->decompose(false)},
+            { int32_type->decompose(6), boolean_type->decompose(false)},
+        });
+
+    });
+}
+
 SEASTAR_TEST_CASE(test_filtering) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.execute_cql("CREATE TABLE cf (k int, v int,m int,n int,o int,p int static, PRIMARY KEY ((k,v),m,n));").get();
