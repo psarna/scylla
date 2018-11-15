@@ -347,6 +347,7 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
     static logging::logger rlogger("restrictions_filter");
 
     if (_current_partition_key_does_not_match || _current_static_row_does_not_match) {
+        ++_total_rows_dropped;
         return false;
     }
 
@@ -387,6 +388,7 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
                 }
                 if (!regular_restriction_matches) {
                     _current_static_row_does_not_match = (cdef->kind == column_kind::static_column);
+                    ++_total_rows_dropped;
                     return false;
                 }
 
@@ -403,6 +405,7 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
             bool pk_restriction_matches = restriction.is_satisfied_by(value_to_check, _options);
             if (!pk_restriction_matches) {
                 _current_partition_key_does_not_match = true;
+                ++_total_rows_dropped;
                 return false;
             }
             }
@@ -416,6 +419,7 @@ bool result_set_builder::restrictions_filter::operator()(const selection& select
             const bytes& value_to_check = clustering_key[cdef->id];
             bool pk_restriction_matches = restriction.is_satisfied_by(value_to_check, _options);
             if (!pk_restriction_matches) {
+                ++_total_rows_dropped;
                 return false;
             }
             }
