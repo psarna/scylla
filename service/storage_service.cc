@@ -439,6 +439,14 @@ void storage_service::register_features() {
     }
 }
 
+void storage_service::start_sys_dist_ks() {
+    if (!_is_survey_mode) {
+        supervisor::notify("starting system distributed keyspace");
+        _sys_dist_ks.start(std::ref(cql3::get_query_processor()), std::ref(service::get_migration_manager())).get();
+        _sys_dist_ks.invoke_on_all(&db::system_distributed_keyspace::start).handle_exception([] (auto ep) {}).get();
+    }
+}
+
 // Runs inside seastar::async context
 void storage_service::join_token_ring(int delay) {
     // This function only gets called on shard 0, but we want to set _joined
@@ -446,13 +454,7 @@ void storage_service::join_token_ring(int delay) {
     get_storage_service().invoke_on_all([] (auto&& ss) {
         ss._joined = true;
     }).get();
-    if (!_is_survey_mode) {
-        supervisor::notify("starting system distributed keyspace");
-        _sys_dist_ks.start(
-                std::ref(cql3::get_query_processor()),
-                std::ref(service::get_migration_manager())).get();
-        _sys_dist_ks.invoke_on_all(&db::system_distributed_keyspace::start).get();
-    }
+
     // We bootstrap if we haven't successfully bootstrapped before, as long as we are not a seed.
     // If we are a seed, or if the user manually sets auto_bootstrap to false,
     // we'll skip streaming data from other nodes and jump directly into the ring.
@@ -558,6 +560,7 @@ void storage_service::join_token_ring(int delay) {
             ss << _bootstrap_tokens;
             set_mode(mode::JOINING, sprint("Replacing a node with token(s): %s", ss.str()), true);
         }
+        start_sys_dist_ks();
         bootstrap(_bootstrap_tokens);
         // bootstrap will block until finished
         if (_is_bootstrap_mode) {
@@ -591,7 +594,9 @@ void storage_service::join_token_ring(int delay) {
                 slogger.info("Using saved tokens {}", _bootstrap_tokens);
             }
         }
+        start_sys_dist_ks();
     }
+    assert(_sys_dist_ks.local_is_initialized());
 #if 0
     // if we don't have system_traces keyspace at this point, then create it manually
     if (Schema.instance.getKSMetaData(TraceKeyspace.NAME) == null)

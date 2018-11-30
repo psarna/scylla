@@ -467,6 +467,7 @@ private:
     void prepare_to_join(std::vector<inet_address> loaded_endpoints, bind_messaging_port do_bind = bind_messaging_port::yes);
     void register_features();
     void join_token_ring(int delay);
+    void start_sys_dist_ks();
 public:
     future<> join_ring();
     bool is_joined();
