@@ -1021,7 +1021,8 @@ view_builder::view_builder(database& db, db::system_distributed_keyspace& sys_di
 future<> view_builder::start() {
     _started = seastar::async([this] {
         // Wait for schema agreement even if we're a seed node.
-        while (!_mm.have_schema_agreement()) {
+        const bool try_schema_pull = true;
+        while (!_mm.have_schema_agreement(try_schema_pull)) {
             if (_as.abort_requested()) {
                 return;
             }
