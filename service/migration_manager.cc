@@ -134,7 +134,7 @@ future<> migration_manager::schedule_schema_pull(const gms::inet_address& endpoi
     return make_ready_future<>();
 }
 
-bool migration_manager::have_schema_agreement() {
+bool migration_manager::have_schema_agreement(bool try_schema_pull) {
     const auto known_endpoints = gms::get_local_gossiper().endpoint_state_map;
     if (known_endpoints.size() == 1) {
         // Us.
@@ -157,6 +157,9 @@ bool migration_manager::have_schema_agreement() {
         utils::UUID remote_version{schema->value};
         if (our_version != remote_version) {
             mlogger.debug("Schema mismatch for {} ({} != {}).", endpoint, our_version, remote_version);
+            if (try_schema_pull) {
+                maybe_schedule_schema_pull(remote_version, endpoint).get();
+            }
             return false;
         } else {
             match = true;

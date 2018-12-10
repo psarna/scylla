@@ -147,7 +147,7 @@ public:
     /**
      * Known peers in the cluster have the same schema version as us.
      */
-    bool have_schema_agreement();
+    bool have_schema_agreement(bool try_schema_pull = false);
 
     void init_messaging_service();
 private:
