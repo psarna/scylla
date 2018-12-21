@@ -1309,6 +1309,7 @@ static future<> flush_base(lw_shared_ptr<column_family> base, abort_source& as) 
 }
 
 void view_builder::on_create_view(const sstring& ks_name, const sstring& view_name) {
+    _db.get_failure_injector().check_breakpoint("on_create_view");
     with_semaphore(_sem, 1, [ks_name, view_name, this] {
         auto view = view_ptr(_db.find_schema(ks_name, view_name));
         auto& step = get_or_create_build_step(view->view_info()->base_id());
