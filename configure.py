@@ -363,6 +363,7 @@ scylla_tests = [
     'tests/utf8_test',
     'tests/small_vector_test',
     'tests/data_listeners_test',
+    'tests/failure_injector_test',
 ]
 
 perf_tests = [
