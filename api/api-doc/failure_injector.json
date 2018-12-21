@@ -1,0 +1,109 @@
+{
+   "apiVersion":"0.0.1",
+   "swaggerVersion":"1.2",
+   "basePath":"{{Protocol}}://{{Host}}",
+   "resourcePath":"/failure_injector",
+   "produces":[
+      "application/json"
+   ],
+   "apis":[
+      {
+         "path":"/v2/failure_injector/injection/{injection}",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Activate an injection that triggers a failure in code",
+               "type":"void",
+               "nickname":"set_injection",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"injection",
+                     "description":"injection name, should correspond to an injection added in code",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"path"
+                  },
+                  {
+                     "name":"failure_handler",
+                     "description":"Failure handler type",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "enum":[
+                        "log_error",
+                        "throw_exception",
+                        "stall"
+                     ],
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"failure_args",
+                     "description":"Custom extra arguments for a failure handler",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"count",
+                     "description":"Number of repetitions for that failure",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"delay",
+                     "description":"Number of times the action should succeed before failure is triggered",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            },
+            {
+               "method":"DELETE",
+               "summary":"Deactiveate an injection previously activated by the API",
+               "type":"void",
+               "nickname":"unset_injection",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"injection",
+                     "description":"injection name",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"path"
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "path":"/v2/failure_injector/injection",
+         "operations":[
+            {
+               "method":"GET",
+               "summary":"List all activated injections that will trigger a failure in code",
+               "type":"array",
+               "items":{
+                  "type":"string"
+               },
+               "nickname":"get_active_injections",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[]
+            }
+         ]
+      }
+   ]
+}
