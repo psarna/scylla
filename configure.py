@@ -362,6 +362,7 @@ scylla_tests = [
     'tests/top_k_test',
     'tests/utf8_test',
     'tests/small_vector_test',
+    'tests/failure_injector_test',
 ]
 
 perf_tests = [
@@ -813,6 +814,7 @@ pure_boost_tests = set([
     'tests/auth_passwords_test',
     'tests/top_k_test',
     'tests/small_vector_test',
+    'tests/failure_injector_test',
 ])
 
 tests_not_using_seastar_test_framework = set([
