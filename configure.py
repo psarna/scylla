@@ -703,6 +703,7 @@ scylla_core = (['database.cc',
                 'distributed_loader.cc',
                 'utils/utf8.cc',
                 'utils/ascii.cc',
+                'utils/failure_injector.cc'
                 ] + [Antlr3Grammar('cql3/Cql.g')] + [Thrift('interface/cassandra.thrift', 'Cassandra')]
                )
 
