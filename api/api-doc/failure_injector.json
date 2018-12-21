@@ -1,0 +1,111 @@
+{
+   "apiVersion":"0.0.1",
+   "swaggerVersion":"1.2",
+   "basePath":"{{Protocol}}://{{Host}}",
+   "resourcePath":"/failure_injector",
+   "produces":[
+      "application/json"
+   ],
+   "apis":[
+      {
+         "path":"/failure_injector/inject",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Set a breakpoint",
+               "type":"void",
+               "nickname":"set_breakpoint",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"breakpoint",
+                     "description":"Breakpoint name",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"failure_handler",
+                     "description":"Failure handler type",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "enum":[
+                        "log_error",
+                        "throw_exception",
+                        "stall"
+                     ],
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"failure_args",
+                     "description":"Custom extra arguments for a failure handler",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"count",
+                     "description":"Number of repetitions for that failure",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  },
+                  {
+                     "name":"delay",
+                     "description":"Number of times the action should succeed before failure is triggered",
+                     "required":false,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+{
+         "path":"/failure_injector/cancel",
+         "operations":[
+            {
+               "method":"POST",
+               "summary":"Unset a breakpoint",
+               "type":"void",
+               "nickname":"unset_breakpoint",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[
+                  {
+                     "name":"breakpoint",
+                     "description":"Breakpoint name",
+                     "required":true,
+                     "allowMultiple":false,
+                     "type":"string",
+                     "paramType":"query"
+                  }
+               ]
+            }
+         ]
+      },
+      {
+         "path":"/failure_injector/active_breakpoints",
+         "operations":[
+            {
+               "method":"GET",
+               "summary":"List all active breakpoints",
+               "type":"string",
+               "nickname":"get_active_breakpoints",
+               "produces":[
+                  "application/json"
+               ],
+               "parameters":[]
+            }
+         ]
+      }
+   ]
+}

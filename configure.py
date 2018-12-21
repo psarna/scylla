@@ -736,6 +736,8 @@ api = ['api/api.cc',
        'api/system.cc',
        'api/config.cc',
        'api/api-doc/config.json',
+        'api/failure_injector.cc',
+        'api/api-doc/failure_injector.json',
        ]
 
 idls = ['idl/gossip_digest.idl.hh',
