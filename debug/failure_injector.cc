@@ -171,4 +171,6 @@ condition_variable* failure_injector::wait_on_condition_handler::maybe_need_wait
     return std::addressof(_cond);
 }
 
+thread_local failure_injector _the_failure_injector;
+
 }
