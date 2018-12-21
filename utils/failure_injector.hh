@@ -230,4 +230,11 @@ private:
     void maybe_wake_up(const sstring& injection_name);
 };
 
+extern thread_local failure_injector _the_failure_injector;
+
+[[gnu::always_inline]]
+inline failure_injector& get_failure_injector() {
+    return _the_failure_injector;
+}
+
 }
