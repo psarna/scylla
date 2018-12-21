@@ -89,6 +89,7 @@
 #include "db/large_partition_handler.hh"
 #include "cache_temperature.hh"
 #include <unordered_set>
+#include "debug/failure_injector.hh"
 
 class cell_locker;
 class cell_locker_stats;
@@ -1246,6 +1247,7 @@ private:
     query::querier_cache _querier_cache;
 
     std::unique_ptr<db::large_partition_handler> _large_partition_handler;
+    debug::failure_injector _failure_injector;
 
     future<> init_commitlog();
     future<> apply_in_memory(const frozen_mutation& m, schema_ptr m_schema, db::rp_handle&&, db::timeout_clock::time_point timeout);
@@ -1303,6 +1305,10 @@ public:
     }
     const compaction_manager& get_compaction_manager() const {
         return *_compaction_manager;
+    }
+
+    debug::failure_injector& get_failure_injector() {
+        return _failure_injector;
     }
 
     void add_column_family(keyspace& ks, schema_ptr schema, column_family::config cfg);
