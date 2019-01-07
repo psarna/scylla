@@ -680,7 +680,7 @@ int main(int ac, char** av) {
                     table& t = *(x.second);
                     for (sstables::shared_sstable sst : *t.get_sstables()) {
                         if (sst->is_staging()) {
-                            view_update_from_staging_generator.local().register_staging_sstable(std::move(sst), t.shared_from_this());
+                            view_update_from_staging_generator.local().register_staging_sstable(std::move(sst), t.shared_from_this(), db::view::view_update_from_staging_generator::throttle::no).get();
                         }
                     }
                 }
