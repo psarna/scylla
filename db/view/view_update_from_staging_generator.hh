@@ -32,6 +32,7 @@
 namespace db::view {
 
 class view_update_from_staging_generator {
+    struct throttle_tag {};
     static constexpr size_t registration_queue_size = 5;
     database& _db;
     service::storage_proxy& _proxy;
@@ -46,11 +47,12 @@ class view_update_from_staging_generator {
     };
     std::deque<sstable_with_table> _sstables_with_tables;
 public:
+    using throttle = bool_class<throttle_tag>;
     view_update_from_staging_generator(database& db, service::storage_proxy& proxy) : _db(db), _proxy(proxy) { }
 
     future<> start();
     future<> stop();
-    future<> register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table);
+    future<> register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table, throttle should_throttle = throttle::yes);
 };
 
 }
