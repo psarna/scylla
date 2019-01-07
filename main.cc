@@ -518,8 +518,9 @@ int main(int ac, char** av) {
             startlog.info("Scylla API server listening on {}:{} ...", api_address, api_port);
             static sharded<auth::service> auth_service;
             static sharded<db::system_distributed_keyspace> sys_dist_ks;
+            static sharded<db::view::view_update_from_staging_generator> view_update_from_staging_generator;
             supervisor::notify("initializing storage service");
-            init_storage_service(db, auth_service, sys_dist_ks, feature_service);
+            init_storage_service(db, auth_service, sys_dist_ks, view_update_from_staging_generator, feature_service);
             supervisor::notify("starting per-shard database core");
 
             // Note: changed from using a move here, because we want the config object intact.
@@ -672,9 +673,8 @@ int main(int ac, char** av) {
             supervisor::notify("loading sstables");
             distributed_loader::init_non_system_keyspaces(db, proxy).get();
 
-            static sharded<db::view::view_update_from_staging_generator> view_update_from_staging_generator;
-            view_update_from_staging_generator.start(std::ref(db), std::ref(proxy)).get();
             supervisor::notify("discovering staging sstables");
+            view_update_from_staging_generator.start(std::ref(db), std::ref(proxy)).get();
             db.invoke_on_all([] (database& db) {
                 for (auto& x : db.get_column_families()) {
                     table& t = *(x.second);
