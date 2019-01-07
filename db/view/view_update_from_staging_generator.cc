@@ -54,13 +54,13 @@ future<> view_update_from_staging_generator::stop() {
     });
 }
 
-future<> view_update_from_staging_generator::register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table) {
+future<> view_update_from_staging_generator::register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table, throttle should_throttle) {
     if (_as.abort_requested()) {
         return make_ready_future<>();
     }
     _sstables_with_tables.emplace_back(std::move(sst), std::move(table));
     _pending_sstables.signal();
-    return _registration_sem.wait(1);
+    return should_throttle ? _registration_sem.wait(1) : make_ready_future<>();
 }
 
 }
