@@ -346,27 +346,27 @@ public:
         };
         table& t = service::get_local_storage_service().db().local().find_column_family(_schema->id());
         _writer_done[node_idx] = do_with(t.stream_in_progress(), [this, &t, get_next_mutation_fragment = std::move(get_next_mutation_fragment)] (utils::phased_barrier::operation&) {
-          return distribute_reader_and_consume_on_shards(_schema, dht::global_partitioner(),
-                  make_generating_reader(_schema, std::move(get_next_mutation_fragment)),
-                  [&t, estimated_partitions = this->_estimated_partitions] (flat_mutation_reader reader) {
-            return db::view::check_needs_view_update_path(_sys_dist_ks->local(), t, streaming::stream_reason::repair).then([t = t.shared_from_this(), estimated_partitions, reader = std::move(reader)] (bool use_view_update_path) mutable {
-                sstables::shared_sstable sst = use_view_update_path ? t->make_streaming_staging_sstable() : t->make_streaming_sstable_for_write();
-                schema_ptr s = reader.schema();
-                sstables::sstable_writer_config sst_cfg;
-                sst_cfg.large_partition_handler = t->get_large_partition_handler();
-                auto& pc = service::get_local_streaming_write_priority();
-                return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
-                    return sst->open_data();
-                }).then([t, sst] {
-                    return t->add_sstable_and_update_cache(sst);
-                }).then([t, s, sst, use_view_update_path]() mutable -> future<> {
-                    if (!use_view_update_path) {
-                        return make_ready_future<>();
-                    }
-                    return _view_update_generator->local().register_staging_sstable(sst, std::move(t));
+            return distribute_reader_and_consume_on_shards(_schema, dht::global_partitioner(),
+                    make_generating_reader(_schema, std::move(get_next_mutation_fragment)),
+                    [&t, estimated_partitions = this->_estimated_partitions] (flat_mutation_reader reader) {
+                return db::view::check_needs_view_update_path(_sys_dist_ks->local(), t, streaming::stream_reason::repair).then([t = t.shared_from_this(), estimated_partitions, reader = std::move(reader)] (bool use_view_update_path) mutable {
+                    sstables::shared_sstable sst = use_view_update_path ? t->make_streaming_staging_sstable() : t->make_streaming_sstable_for_write();
+                    schema_ptr s = reader.schema();
+                    sstables::sstable_writer_config sst_cfg;
+                    sst_cfg.large_partition_handler = t->get_large_partition_handler();
+                    auto& pc = service::get_local_streaming_write_priority();
+                    return sst->write_components(std::move(reader), std::max(1ul, estimated_partitions), s, sst_cfg, {}, pc).then([sst] {
+                        return sst->open_data();
+                    }).then([t, sst] {
+                        return t->add_sstable_and_update_cache(sst);
+                    }).then([t, s, sst, use_view_update_path]() mutable -> future<> {
+                        if (!use_view_update_path) {
+                            return make_ready_future<>();
+                        }
+                        return _view_update_generator->local().register_staging_sstable(sst, std::move(t));
+                    });
                 });
             });
-          });
         });
     }
 
