@@ -87,8 +87,11 @@ namespace debug {
  */
 class failure_injector {
 public:
+#ifdef DEBUG_ENABLE_FAILURE_INJECTOR
+    static constexpr bool statically_enabled = true;
+#else
     static constexpr bool statically_enabled = false;
-
+#endif
     using failure_handler_fun = noncopyable_function<void()>;
 
     /**
