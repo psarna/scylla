@@ -438,8 +438,9 @@ public:
         state::replay_allowed,
         state::stopping>>;
 
-private:
+public:
     using ep_key_type = typename end_point_hints_manager::key_type;
+private:
     using ep_managers_map_type = std::unordered_map<ep_key_type, end_point_hints_manager>;
 
 public:
@@ -523,6 +524,14 @@ public:
             return 0;
         }
         return it->second.hints_in_progress();
+    }
+
+    future<> wait_for_all_hints_sent_for(ep_key_type ep) {
+        auto it = find_ep_manager(ep);
+        if (it == ep_managers_end()) {
+            return make_ready_future<>();
+        }
+        return it->second.wait_for_all_hints_sent();
     }
 
     void add_ep_with_pending_hints(ep_key_type key) {
