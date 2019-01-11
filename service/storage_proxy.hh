@@ -408,6 +408,12 @@ public:
             tracing::trace_state_ptr trace_state = nullptr,
             uint64_t max_size = query::result_memory_limiter::maximum_result_size);
 
+    /*
+     * Waits until all view update hints pending for given endpoint are processed
+     */
+    future<> wait_for_all_view_hints_sent_for(db::hints::manager::ep_key_type ep) {
+        return _hints_for_views_manager.wait_for_all_hints_sent_for(ep);
+    }
 
     future<> stop();
     future<> stop_hints_manager();
