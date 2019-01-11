@@ -818,7 +818,7 @@ int main(int ac, char** av) {
             static sharded<db::view::view_builder> view_builder;
             if (cfg->view_building()) {
                 supervisor::notify("starting the view builder");
-                view_builder.start(std::ref(db), std::ref(sys_dist_ks), std::ref(mm)).get();
+                view_builder.start(std::ref(db), std::ref(proxy), std::ref(sys_dist_ks), std::ref(mm)).get();
                 view_builder.invoke_on_all(&db::view::view_builder::start).get();
             }
 

@@ -145,6 +145,7 @@ class view_builder final : public service::migration_listener::only_view_notific
     using base_to_build_step_type = std::unordered_map<utils::UUID, build_step>;
 
     database& _db;
+    service::storage_proxy& _proxy;
     db::system_distributed_keyspace& _sys_dist_ks;
     service::migration_manager& _mm;
     base_to_build_step_type _base_to_build_step;
@@ -169,7 +170,7 @@ public:
     static constexpr size_t batch_size = 128;
 
 public:
-    view_builder(database&, db::system_distributed_keyspace&, service::migration_manager&);
+    view_builder(database&, service::storage_proxy&, db::system_distributed_keyspace&, service::migration_manager&);
     view_builder(view_builder&&) = delete;
 
     /**

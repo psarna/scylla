@@ -1037,8 +1037,9 @@ future<> mutate_MV(
     return f.finally([fs = std::move(fs)] { });
 }
 
-view_builder::view_builder(database& db, db::system_distributed_keyspace& sys_dist_ks, service::migration_manager& mm)
+view_builder::view_builder(database& db, service::storage_proxy& proxy, db::system_distributed_keyspace& sys_dist_ks, service::migration_manager& mm)
         : _db(db)
+        , _proxy(proxy)
         , _sys_dist_ks(sys_dist_ks)
         , _mm(mm) {
 }
