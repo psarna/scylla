@@ -1588,8 +1588,12 @@ void view_builder::execute(build_step& step, exponential_backoff_retry r) {
     _as.check();
 
     std::vector<future<>> bookkeeping_ops;
-    bookkeeping_ops.reserve(built.views.size() + step.build_status.size());
+    bookkeeping_ops.reserve(2 * built.views.size() + step.build_status.size());
     for (auto& [view, first_token, _] : built.views) {
+        auto ep = get_view_natural_endpoint(view->ks_name(), step.current_token(), first_token);
+        if (ep) {
+            bookkeeping_ops.push_back(_proxy.wait_for_all_view_hints_sent_for(*ep));
+        }
         bookkeeping_ops.push_back(maybe_mark_view_as_built(view, first_token));
     }
     built.release();
