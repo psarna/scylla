@@ -286,12 +286,34 @@ public:
         state_set _state;
         const fs::path _hints_dir;
         uint64_t _hints_in_progress = 0;
+        condition_variable _all_hints_sent;
         sender _sender;
 
     public:
         end_point_hints_manager(const key_type& key, manager& shard_manager);
         end_point_hints_manager(end_point_hints_manager&&);
         ~end_point_hints_manager();
+
+        void inc_hints_in_progress() {
+            ++_hints_in_progress;
+        }
+
+        void dec_hints_in_progress() {
+            --_hints_in_progress;
+            if (!_sender.have_segments()) {
+                maybe_signal_all_hints_sent();
+            }
+        }
+
+        future<> wait_for_all_hints_sent() {
+            return _all_hints_sent.wait();
+        }
+
+        void maybe_signal_all_hints_sent() {
+            if (_hints_in_progress == 0) {
+                _all_hints_sent.signal();
+            }
+        }
 
         const key_type& end_point_key() const noexcept {
             return _key;

@@ -152,7 +152,7 @@ void manager::forbid_hints_for_eps_with_pending_hints() {
 bool manager::end_point_hints_manager::store_hint(schema_ptr s, lw_shared_ptr<const frozen_mutation> fm, tracing::trace_state_ptr tr_state) noexcept {
     try {
         with_gate(_store_gate, [this, s = std::move(s), fm = std::move(fm), tr_state] () mutable {
-            ++_hints_in_progress;
+            inc_hints_in_progress();
             size_t mut_size = fm->representation().size();
             shard_stats().size_of_hints_in_progress += mut_size;
             shard_resource_manager().inc_size_of_hints_in_progress(mut_size);
@@ -174,7 +174,7 @@ bool manager::end_point_hints_manager::store_hint(schema_ptr s, lw_shared_ptr<co
                     tracing::trace(tr_state, "Failed to store a hint to {}: {}", end_point_key(), eptr);
                 });
             }).finally([this, mut_size, fm, s] {
-                --_hints_in_progress;
+                dec_hints_in_progress();
                 shard_stats().size_of_hints_in_progress -= mut_size;
                 shard_resource_manager().dec_size_of_hints_in_progress(mut_size);
             });;
@@ -771,6 +771,9 @@ void manager::end_point_hints_manager::sender::send_hints_maybe() noexcept {
                 break;
             }
             _segments_to_replay.pop_front();
+            if (_segments_to_replay.empty()) {
+                _ep_manager.maybe_signal_all_hints_sent();
+            }
             ++replayed_segments_count;
         }
 
