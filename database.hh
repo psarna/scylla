@@ -881,7 +881,7 @@ public:
         return _config.large_partition_handler;
     }
 
-    future<> populate_views(
+    future<std::vector<gms::inet_address>> populate_views(
             std::vector<view_ptr>,
             dht::token base_token,
             flat_mutation_reader&&);

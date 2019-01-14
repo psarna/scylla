@@ -929,7 +929,7 @@ get_view_natural_endpoint(const sstring& keyspace_name,
 // to a modification of a single base partition, and apply them to the
 // appropriate paired replicas. This is done asynchronously - we do not wait
 // for the writes to complete.
-future<> mutate_MV(
+future<std::vector<gms::inet_address>> mutate_MV(
         const dht::token& base_token,
         std::vector<frozen_mutation_and_schema> view_updates,
         db::view::stats& stats,
@@ -953,9 +953,12 @@ future<> mutate_MV(
                 stats.view_updates_failed_remote += remotes;
                 auto ep = f.get_exception();
                 vlogger.error("Error applying view update to {}: {}", target, ep);
-                return make_exception_future<>(std::move(ep));
+                return make_exception_future<std::optional<gms::inet_address>>(std::move(ep));
             } else {
-                return make_ready_future<>();
+                if (!is_local) {
+                    return std::move(target);
+                }
+                return make_ready_future<std::optional<gms::inet_address>>();
             }
         };
         if (paired_endpoint) {
@@ -1033,7 +1036,22 @@ future<> mutate_MV(
             }));
         }
     }
-    auto f = seastar::when_all_succeed(fs->begin(), fs->end());
+    auto f = seastar::when_all(fs->begin(), fs->end()).then([] (std::vector<future<std::optional<gms::inet_address>>> ret) {
+        std::vector<gms::inet_address> remote_endpoints;
+
+        for (auto& f : ret) {
+            try {
+                auto remote_endpoint = f.get0();
+                if (remote_endpoint) {
+                    remote_endpoints.push_back(*remote_endpoint);
+                }
+            } catch(...) {
+                return make_exception_future<std::vector<gms::inet_address>>(std::current_exception());
+            }
+        }
+
+        return make_ready_future<std::vector<gms::inet_address>>(std::move(remote_endpoints));
+    });
     return f.finally([fs = std::move(fs)] { });
 }
 
@@ -1543,11 +1561,12 @@ public:
         _builder._as.check();
         if (!_fragments.empty()) {
             _fragments.push_front(partition_start(_step.current_key, tombstone()));
-            _step.base->populate_views(
+            auto used_remote_eps = _step.base->populate_views(
                     _views_to_build,
                     _step.current_token(),
-                    make_flat_mutation_reader_from_fragments(_step.base->schema(), std::move(_fragments))).get();
+                    make_flat_mutation_reader_from_fragments(_step.base->schema(), std::move(_fragments))).get0();
             _fragments.clear();
+            _step.used_remote_endpoints.insert(_step.used_remote_endpoints.end(), std::make_move_iterator(used_remote_eps.begin()), std::make_move_iterator(used_remote_eps.end()));
         }
         return stop_iteration(_step.build_status.empty());
     }
@@ -1588,12 +1607,11 @@ void view_builder::execute(build_step& step, exponential_backoff_retry r) {
     _as.check();
 
     std::vector<future<>> bookkeeping_ops;
-    bookkeeping_ops.reserve(2 * built.views.size() + step.build_status.size());
+    bookkeeping_ops.reserve(built.views.size() + step.build_status.size());
+    for (auto& ep : built.used_remote_endpoints) {
+        bookkeeping_ops.push_back(_proxy.wait_for_all_view_hints_sent_for(ep));
+    }
     for (auto& [view, first_token, _] : built.views) {
-        auto ep = get_view_natural_endpoint(view->ks_name(), step.current_token(), first_token);
-        if (ep) {
-            bookkeeping_ops.push_back(_proxy.wait_for_all_view_hints_sent_for(*ep));
-        }
         bookkeeping_ops.push_back(maybe_mark_view_as_built(view, first_token));
     }
     built.release();

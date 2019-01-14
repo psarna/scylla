@@ -136,6 +136,7 @@ class view_builder final : public service::migration_listener::only_view_notific
         flat_mutation_reader reader{nullptr};
         dht::decorated_key current_key{dht::minimum_token(), partition_key::make_empty()};
         std::vector<view_build_status> build_status;
+        std::vector<gms::inet_address> used_remote_endpoints;
 
         const dht::token& current_token() const {
             return current_key.token();

@@ -2152,7 +2152,7 @@ table::local_base_lock(
  * @param reader the base table updates being applied, which all correspond to the base token.
  * @return a future that resolves when the updates have been acknowledged by the view replicas
  */
-future<> table::populate_views(
+future<std::vector<gms::inet_address>> table::populate_views(
         std::vector<view_ptr> views,
         dht::token base_token,
         flat_mutation_reader&& reader) {
