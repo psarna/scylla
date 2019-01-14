@@ -894,7 +894,8 @@ public:
     future<> populate_views(
             std::vector<view_ptr>,
             dht::token base_token,
-            flat_mutation_reader&&);
+            flat_mutation_reader&&,
+            db::write_type);
 
     reader_concurrency_semaphore& read_concurrency_semaphore() {
         return *_config.read_concurrency_semaphore;

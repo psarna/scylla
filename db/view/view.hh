@@ -109,7 +109,8 @@ future<> mutate_MV(
         const dht::token& base_token,
         std::vector<frozen_mutation_and_schema> view_updates,
         db::view::stats& stats,
-        db::timeout_semaphore_units pending_view_updates);
+        db::timeout_semaphore_units pending_view_updates,
+        db::write_type = db::write_type::VIEW);
 
 /**
  * create_virtual_column() adds a "virtual column" to a schema builder.

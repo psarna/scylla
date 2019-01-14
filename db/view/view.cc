@@ -933,7 +933,8 @@ future<> mutate_MV(
         const dht::token& base_token,
         std::vector<frozen_mutation_and_schema> view_updates,
         db::view::stats& stats,
-        db::timeout_semaphore_units pending_view_updates)
+        db::timeout_semaphore_units pending_view_updates,
+        db::write_type write_type)
 {
     auto fs = std::make_unique<std::vector<future<>>>();
     fs->reserve(view_updates.size());
@@ -999,7 +1000,8 @@ future<> mutate_MV(
                         std::move(mut),
                         *paired_endpoint,
                         std::move(pending_endpoints),
-                        db::write_type::VIEW, stats).then_wrapped(
+                        write_type,
+                        stats).then_wrapped(
                                 [paired_endpoint,
                                  is_endpoint_local,
                                  updates_pushed_remote,
@@ -1545,7 +1547,8 @@ public:
             _step.base->populate_views(
                     _views_to_build,
                     _step.current_token(),
-                    make_flat_mutation_reader_from_fragments(_step.base->schema(), std::move(_fragments))).get();
+                    make_flat_mutation_reader_from_fragments(_step.base->schema(), std::move(_fragments)),
+                    db::write_type::SIMPLE).get();
             _fragments.clear();
         }
         return stop_iteration(_step.build_status.empty());

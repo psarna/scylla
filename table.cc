@@ -2146,22 +2146,23 @@ table::local_base_lock(
 future<> table::populate_views(
         std::vector<view_ptr> views,
         dht::token base_token,
-        flat_mutation_reader&& reader) {
+        flat_mutation_reader&& reader,
+        db::write_type write_type) {
     auto& schema = reader.schema();
     return db::view::generate_view_updates(
             schema,
             std::move(views),
             std::move(reader),
-            { }).then([base_token = std::move(base_token), this] (std::vector<frozen_mutation_and_schema>&& updates) mutable {
+            { }).then([base_token = std::move(base_token), write_type, this] (std::vector<frozen_mutation_and_schema>&& updates) mutable {
         size_t update_size = memory_usage_of(updates);
         size_t units_to_wait_for = std::min(_config.view_update_concurrency_semaphore_limit, update_size);
         return seastar::get_units(*_config.view_update_concurrency_semaphore, units_to_wait_for).then(
                 [base_token = std::move(base_token),
                  updates = std::move(updates),
                  units_to_consume = update_size - units_to_wait_for,
-                 this] (db::timeout_semaphore_units&& units) mutable {
+                 write_type, this] (db::timeout_semaphore_units&& units) mutable {
             units.adopt(seastar::consume_units(*_config.view_update_concurrency_semaphore, units_to_consume));
-            return db::view::mutate_MV(std::move(base_token), std::move(updates), _view_stats, std::move(units));
+            return db::view::mutate_MV(std::move(base_token), std::move(updates), _view_stats, std::move(units), write_type);
         });
     });
 }
