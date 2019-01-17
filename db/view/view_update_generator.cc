@@ -32,8 +32,8 @@ future<> view_update_generator::start() {
             while (!_sstables_with_tables.empty()) {
                 auto& entry = _sstables_with_tables.front();
                 schema_ptr s = entry.t->schema();
-                flat_mutation_reader staging_sstable_reader = entry.sst->read_rows_flat(s);
-                auto result = staging_sstable_reader.consume_in_thread(view_updating_consumer(s, _proxy, entry.sst, _as), db::no_timeout);
+                flat_mutation_reader sstable_reader = entry.sst->read_rows_flat(s);
+                auto result = sstable_reader.consume_in_thread(view_updating_consumer(s, _proxy, entry.sst, _as), db::no_timeout);
                 if (result == stop_iteration::yes) {
                     break;
                 }
