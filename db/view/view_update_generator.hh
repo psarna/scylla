@@ -31,6 +31,29 @@
 
 namespace db::view {
 
+/**
+ * The view_update_generator is a sharded service responsible for generating view updates
+ * from sstables that need it, which includes:
+ *  - sstables streamed via repair
+ *  - sstables streamed during view building
+ *  - sstables loaded via `nodetool refresh` and /upload directory
+ *
+ * SSTables can be registered either offline (before the service is started), e.g. during
+ * initial directory scans, or online, which happens e.g. during streaming.
+ * For consistency reasons, SSTables that require view update generation reside in directories
+ * different than the regular data path for a table (/staging, /upload, etc.).
+ * These sstables do not take part in compaction (so they can be easily tracked) and they
+ * are not used during view update generation for other sstables belonging to the same table.
+ *
+ * After an sstable is registered to the update generator, it is queued for view update
+ * generation. Later, it is moved from its temporary location to its target data directory
+ * and becomes a first class citizen, which means that it can be compacted, read from,
+ * used as a source for another view update generation process, and so on.
+ *
+ * In order to prevent too many in-flight view updates (e.g. when a large number of sstables
+ * is streamed in a short period of time), the registration queue is throttled with a semaphore
+ * that accepts up to 5 active waiters.
+ */
 class view_update_generator {
     static constexpr size_t registration_queue_size = 5;
     database& _db;
