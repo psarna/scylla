@@ -398,7 +398,7 @@ public:
                     if (!use_view_update_path) {
                         return make_ready_future<>();
                     }
-                    return _view_update_generator->local().register_staging_sstable(sst, std::move(t));
+                    return _view_update_generator->local().register_sstable(sst, std::move(t));
                 });
             });
         },

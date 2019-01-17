@@ -451,7 +451,7 @@ future<> distributed_loader::load_new_sstables(distributed<database>& db, distri
                 for (auto& sst : cf._sstables_opened_but_not_loaded) {
                     cf.load_sstable(sst, true);
                     if (sst->requires_view_building()) {
-                        view_update_generator.local().register_staging_sstable(sst, cf.shared_from_this());
+                        view_update_generator.local().register_sstable(sst, cf.shared_from_this());
                     }
                 }
                 cf._sstables_opened_but_not_loaded.clear();

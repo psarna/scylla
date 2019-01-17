@@ -395,7 +395,7 @@ SEASTAR_TEST_CASE(test_view_update_generator) {
         sst->write_components(flat_mutation_reader_from_mutations({m}), 1ul, s, sst_cfg, {}, pc).get();
         sst->open_data().get();
         t->add_sstable_and_update_cache(sst).get();
-        view_update_generator.register_staging_sstable(sst, t).get();
+        view_update_generator.register_sstable(sst, t).get();
 
         eventually([&] {
             auto msg = e.execute_cql("SELECT * FROM t WHERE p = 'a'").get0();

@@ -681,7 +681,7 @@ int main(int ac, char** av) {
                     table& t = *(x.second);
                     for (sstables::shared_sstable sst : *t.get_sstables()) {
                         if (sst->requires_view_building()) {
-                            view_update_generator.local().register_staging_sstable(std::move(sst), t.shared_from_this());
+                            view_update_generator.local().register_sstable(std::move(sst), t.shared_from_this());
                         }
                     }
                 }

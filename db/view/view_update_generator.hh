@@ -73,7 +73,7 @@ public:
 
     future<> start();
     future<> stop();
-    future<> register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table);
+    future<> register_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table);
 private:
     bool should_throttle() const;
 };

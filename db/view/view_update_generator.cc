@@ -58,7 +58,7 @@ bool view_update_generator::should_throttle() const {
     return !_started.available();
 }
 
-future<> view_update_generator::register_staging_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table) {
+future<> view_update_generator::register_sstable(sstables::shared_sstable sst, lw_shared_ptr<table> table) {
     if (_as.abort_requested()) {
         return make_ready_future<>();
     }
