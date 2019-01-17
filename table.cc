@@ -2428,7 +2428,7 @@ table::make_reader_excluding_sstable(schema_ptr s,
     return make_combined_reader(s, std::move(readers), fwd, fwd_mr);
 }
 
-void table::move_sstable_from_staging_in_thread(sstables::shared_sstable sst) {
+void table::move_sstable_to_data_dir_in_thread(sstables::shared_sstable sst) {
     try {
         sst->move_to_new_dir_in_thread(dir(), sst->generation());
     } catch (...) {

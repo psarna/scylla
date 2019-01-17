@@ -37,7 +37,7 @@ future<> view_update_generator::start() {
                 if (result == stop_iteration::yes) {
                     break;
                 }
-                entry.t->move_sstable_from_staging_in_thread(entry.sst);
+                entry.t->move_sstable_to_data_dir_in_thread(entry.sst);
                 _registration_sem.signal();
                 _sstables_with_tables.pop_front();
             }

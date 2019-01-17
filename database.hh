@@ -491,7 +491,7 @@ private:
     utils::phased_barrier _pending_streams_phaser;
 public:
     future<> add_sstable_and_update_cache(sstables::shared_sstable sst);
-    void move_sstable_from_staging_in_thread(sstables::shared_sstable sst);
+    void move_sstable_to_data_dir_in_thread(sstables::shared_sstable sst);
     sstables::shared_sstable get_staging_sstable(uint64_t generation) {
         auto it = _sstables_staging.find(generation);
         return it != _sstables_staging.end() ? it->second : nullptr;
