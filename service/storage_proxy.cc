@@ -1412,6 +1412,11 @@ future<> storage_proxy::send_to_endpoint(
         // backpressure.
         timeout = clock_type::now() + 5min;
         cl = db::consistency_level::ANY;
+    } else if (type == db::write_type::VIEW_BUILDING) {
+        // View building process also uses a near-infinite timeout, but uses cl::ONE to prevent falling
+        // back to hinted handoff mechanism.
+        timeout = clock_type::now() + 5min;
+        cl = db::consistency_level::ONE;
     } else {
         cl = db::consistency_level::ONE;
     }
