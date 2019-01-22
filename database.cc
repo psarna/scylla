@@ -1479,6 +1479,7 @@ std::ostream& operator<<(std::ostream& os, const write_type& t) {
         case write_type::BATCH_LOG: return os << "BATCH_LOG";
         case write_type::CAS: return os << "CAS";
         case write_type::VIEW: return os << "VIEW";
+        case write_type::VIEW_BUILDING: return os << "VIEW_BUILDING";
     }
     abort();
 }
