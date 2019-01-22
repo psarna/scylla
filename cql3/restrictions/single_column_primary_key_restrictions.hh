@@ -484,6 +484,10 @@ inline bool single_column_primary_key_restrictions<clustering_key>::needs_filter
     return false;
 }
 
+//TODO(sarna): These should be transformed into actual class definitions after detemplatizing single_column_primary_key_restrictions<T>
+using single_column_partition_key_restrictions = single_column_primary_key_restrictions<partition_key>;
+using single_column_clustering_key_restrictions = single_column_primary_key_restrictions<clustering_key>;
+
 }
 }
 
