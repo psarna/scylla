@@ -159,6 +159,11 @@ storage_service::storage_service(distributed<database>& db, sharded<auth::servic
     sstable_write_error.connect([this] { isolate_on_error(); });
     general_disk_error.connect([this] { isolate_on_error(); });
     commit_error.connect([this] { isolate_on_commit_error(); });
+    _mc_sstable_feature.when_enabled().then([&db] () mutable {
+        db.invoke_on_all([] (database& local_db) mutable {
+            local_db.enable_infinite_bound_range_deletions();
+        });
+    });
 }
 
 void storage_service::enable_all_features() {
