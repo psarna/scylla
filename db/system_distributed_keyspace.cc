@@ -105,11 +105,23 @@ schema_ptr cdc_desc() {
     return schema;
 }
 
+schema_ptr service_levels() {
+    static thread_local auto schema = [] {
+        auto id = generate_legacy_id(system_distributed_keyspace::NAME, system_distributed_keyspace::SERVICE_LEVELS);
+        return schema_builder(system_distributed_keyspace::NAME, system_distributed_keyspace::SERVICE_LEVELS, std::make_optional(id))
+                .with_column("service_level", utf8_type, column_kind::partition_key)
+                .with_version(db::system_keyspace::generate_schema_version(id))
+                .build();
+    }();
+    return schema;
+}
+
 static std::vector<schema_ptr> all_tables() {
     return {
         view_build_status(),
         cdc_generations(),
         cdc_desc(),
+        service_levels(),
     };
 }
 
@@ -398,5 +410,42 @@ system_distributed_keyspace::cdc_get_versioned_streams(context ctx) {
     });
 }
 
+future<qos::service_levels_info> system_distributed_keyspace::get_service_levels() const {
+    static sstring prepared_query = format("SELECT * FROM {}.{};", NAME, SERVICE_LEVELS);
+
+    return _qp.execute_internal(prepared_query, {}).then([] (shared_ptr<cql3::untyped_result_set> result_set) {
+        qos::service_levels_info service_levels;
+        for (auto &&row : *result_set) {
+            auto service_level_name = row.get_as<sstring>("service_level");
+            qos::service_level_options slo{};
+            service_levels.emplace(service_level_name, slo);
+        }
+        return service_levels;
+    });
+}
+
+future<qos::service_levels_info> system_distributed_keyspace::get_service_level(sstring service_level_name) const {
+    static sstring prepared_query = format("SELECT * FROM {}.{} WHERE service_level = ?;", NAME, SERVICE_LEVELS);
+    return _qp.execute_internal(prepared_query, {service_level_name}).then([] (shared_ptr<cql3::untyped_result_set> result_set) {
+        qos::service_levels_info service_levels;
+        if (!result_set->empty()) {
+            auto &&row = result_set->one();
+            auto service_level_name = row.get_as<sstring>("service_level");
+            qos::service_level_options slo{};
+            service_levels.emplace(service_level_name, slo);
+        }
+        return service_levels;
+    });
+}
+
+future<> system_distributed_keyspace::set_service_level(sstring service_level_name, qos::service_level_options slo) const {
+    static sstring prepared_puery = format("INSERT INTO {}.{} (service_level) VALUES (?);", NAME, SERVICE_LEVELS);
+    return _qp.execute_internal(prepared_puery, {service_level_name}).discard_result();
+}
+
+future<> system_distributed_keyspace::drop_service_level(sstring service_level_name) const {
+    static sstring prepared_query = format("DELETE FROM {}.{} WHERE service_level= ?;", NAME, SERVICE_LEVELS);
+    return _qp.execute_internal(prepared_query, {service_level_name}).discard_result();
+}
 
 }
