@@ -574,6 +574,10 @@ void storage_proxy::unthrottle() {
 
 storage_proxy::response_id_type storage_proxy::register_response_handler(shared_ptr<abstract_write_response_handler>&& h) {
     auto id = h->id();
+    if (h->is_view()) {
+        std::unordered_set<response_id_type>& responses = _interruptible_writes_per_endpoint[*h->get_targets().begin()];
+        responses.emplace(id);
+    }
     auto e = _response_handlers.emplace(id, std::move(h));
     assert(e.second);
     return id;
@@ -581,15 +585,29 @@ storage_proxy::response_id_type storage_proxy::register_response_handler(shared_
 
 void storage_proxy::remove_response_handler(storage_proxy::response_id_type id) {
     auto entry = _response_handlers.find(id);
+    maybe_remove_interruptible_write(*entry->second);
     entry->second->on_released();
     _response_handlers.erase(std::move(entry));
 }
 
+void storage_proxy::maybe_remove_interruptible_write(const abstract_write_response_handler& h) {
+    if (h.is_view()) {
+        const std::unordered_set<gms::inet_address>& targets = h.get_targets();
+        if (targets.empty()) {
+            return;
+        }
+        auto interruptible_write_it = _interruptible_writes_per_endpoint.find(*targets.begin());
+        if (interruptible_write_it != _interruptible_writes_per_endpoint.end()) {
+            interruptible_write_it->second.erase(h.id());
+        }
+    }
+}
 
 void storage_proxy::got_response(storage_proxy::response_id_type id, gms::inet_address from, std::optional<db::view::update_backlog> backlog) {
     auto it = _response_handlers.find(id);
     if (it != _response_handlers.end()) {
         tracing::trace(it->second->get_trace_state(), "Got a response from /{}", from);
+        maybe_remove_interruptible_write(*it->second);
         if (it->second->response(from)) {
             remove_response_handler(id); // last one, remove entry. Will cancel expiration timer too.
         } else {
@@ -603,6 +621,7 @@ void storage_proxy::got_failure_response(storage_proxy::response_id_type id, gms
     auto it = _response_handlers.find(id);
     if (it != _response_handlers.end()) {
         tracing::trace(it->second->get_trace_state(), "Got {} failures from /{}", count, from);
+        maybe_remove_interruptible_write(*it->second);
         if (it->second->failure_response(from, count)) {
             remove_response_handler(id);
         } else {

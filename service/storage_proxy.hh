@@ -186,6 +186,7 @@ private:
             bool> _mutate_stage;
     db::view::node_update_backlog& _max_view_update_backlog;
     std::unordered_map<gms::inet_address, view_update_backlog_timestamped> _view_update_backlogs;
+    std::unordered_map<gms::inet_address, std::unordered_set<response_id_type>> _interruptible_writes_per_endpoint;
 
 private:
     void uninit_messaging_service();
@@ -292,6 +293,8 @@ private:
     void maybe_update_view_backlog_of(gms::inet_address, std::optional<db::view::update_backlog>);
 
     db::view::update_backlog get_backlog_of(gms::inet_address) const;
+
+    void maybe_remove_interruptible_write(const abstract_write_response_handler& h);
 public:
     storage_proxy(distributed<database>& db, config cfg, db::view::node_update_backlog& max_view_update_backlog);
     ~storage_proxy();
