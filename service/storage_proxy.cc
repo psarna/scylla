@@ -268,6 +268,9 @@ public:
     bool is_counter() const {
         return _type == db::write_type::COUNTER;
     }
+    bool is_view() const {
+        return _type == db::write_type::VIEW;
+    }
     // While delayed, a request is not throttled.
     void unthrottle() {
         _stats.background_writes++;
