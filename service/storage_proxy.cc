@@ -3982,6 +3982,30 @@ void storage_proxy::allow_replaying_hints() noexcept {
     return _hints_resource_manager.allow_replaying();
 }
 
+void storage_proxy::on_join_cluster(const gms::inet_address& endpoint) {};
+
+void storage_proxy::on_leave_cluster(const gms::inet_address& endpoint) {};
+
+void storage_proxy::on_up(const gms::inet_address& endpoint) {};
+
+void storage_proxy::on_down(const gms::inet_address& endpoint) {
+    auto it = _interruptible_writes_per_endpoint.find(endpoint);
+    if (it == _interruptible_writes_per_endpoint.end() || it->second.empty()) {
+        return;
+    }
+    std::unordered_set<response_id_type> timeout_candidates = std::move(it->second);
+    _interruptible_writes_per_endpoint.erase(it);
+    do_with(std::move(timeout_candidates), [this] (std::unordered_set<response_id_type>& candidates) {
+        return parallel_for_each(candidates, [this] (response_id_type candidate) {
+            auto response_it = _response_handlers.find(candidate);
+            if (response_it != _response_handlers.end()) {
+                response_it->second->timeout_cb();
+            }
+            return make_ready_future<>();
+        });
+    }).get();
+};
+
 future<> storage_proxy::stop_hints_manager() {
     return _hints_resource_manager.stop();
 }
