@@ -4006,6 +4006,12 @@ void storage_proxy::on_down(const gms::inet_address& endpoint) {
     }).get();
 };
 
+void storage_proxy::drain_on_shutdown() {
+    for (const gms::inet_address& ep : _interruptible_writes_per_endpoint | boost::adaptors::map_keys) {
+        on_down(ep);
+    }
+}
+
 future<> storage_proxy::stop_hints_manager() {
     return _hints_resource_manager.stop();
 }
