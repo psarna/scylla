@@ -1356,7 +1356,7 @@ future<> storage_service::drain_on_shutdown() {
             slogger.info("Drain on shutdown: system distributed keyspace stopped");
 
             get_storage_proxy().invoke_on_all([] (storage_proxy& local_proxy) {
-                return local_proxy.stop_hints_manager();
+                local_proxy.drain_on_shutdown();
             }).get();
             slogger.info("Drain on shutdown: hints manager is stopped");
 

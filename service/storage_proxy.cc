@@ -4010,6 +4010,7 @@ void storage_proxy::drain_on_shutdown() {
     for (const gms::inet_address& ep : _interruptible_writes_per_endpoint | boost::adaptors::map_keys) {
         on_down(ep);
     }
+    _hints_resource_manager.stop().get();
 }
 
 future<> storage_proxy::stop_hints_manager() {
