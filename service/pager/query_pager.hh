@@ -155,6 +155,8 @@ protected:
     virtual uint32_t max_rows_to_fetch(uint32_t page_size) {
         return std::min(_max, page_size);
     }
+
+    virtual void adjust_per_partition_limit(query::read_command& cmd, uint32_t page_size) const { }
 };
 
 }

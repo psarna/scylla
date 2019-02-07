@@ -219,6 +219,7 @@ static bool has_clustering_keys(const schema& s, const query::read_command& cmd)
 
         auto ranges = _ranges;
         auto command = ::make_lw_shared<query::read_command>(*_cmd);
+        adjust_per_partition_limit(*command, page_size);
         return get_local_storage_proxy().query(_schema,
                 std::move(command),
                 std::move(ranges),
@@ -287,6 +288,10 @@ public:
 protected:
     virtual uint32_t max_rows_to_fetch(uint32_t page_size) override {
         return page_size;
+    }
+
+    virtual void adjust_per_partition_limit(query::read_command& cmd, uint32_t page_size) const override {
+        cmd.slice.set_partition_row_limit(page_size);
     }
 };
 
