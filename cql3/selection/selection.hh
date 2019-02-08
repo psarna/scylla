@@ -272,13 +272,15 @@ public:
         mutable bool _current_static_row_does_not_match = false;
         mutable uint32_t _rows_dropped = 0;
         mutable uint32_t _remaining;
+        schema_ptr _schema;
     public:
-        explicit restrictions_filter(::shared_ptr<restrictions::statement_restrictions> restrictions, const query_options& options, uint32_t remaining)
+        explicit restrictions_filter(::shared_ptr<restrictions::statement_restrictions> restrictions, const query_options& options, uint32_t remaining, schema_ptr schema)
                 : _restrictions(restrictions)
                 , _options(options)
                 , _skip_pk_restrictions(!_restrictions->pk_restrictions_need_filtering())
                 , _skip_ck_restrictions(!_restrictions->ck_restrictions_need_filtering())
                 , _remaining(remaining)
+                , _schema(schema)
         { }
         bool operator()(const selection& selection, const std::vector<bytes>& pk, const std::vector<bytes>& ck, const query::result_row_view& static_row, const query::result_row_view& row) const;
         void reset() {
