@@ -199,6 +199,103 @@ SEASTAR_TEST_CASE(test_allow_filtering_pk_ck) {
     });
 }
 
+SEASTAR_TEST_CASE(test_allow_filtering_multi_column) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("CREATE TABLE t (a int, b int, c int, d int, e int, PRIMARY KEY ((a, b), c, d));").get();
+        e.require_table_exists("ks", "t").get();
+        e.execute_cql("INSERT INTO t (a,b,c,d,e) VALUES (1, 1, 1, 1, 15)").get();
+        e.execute_cql("INSERT INTO t (a,b,c,d,e) VALUES (1, 1, 1, 2, 18)").get();
+        e.execute_cql("INSERT INTO t (a,b,c,d,e) VALUES (1, 2, 1, 2, 25)").get();
+        e.execute_cql("INSERT INTO t (a,b,c,d,e) VALUES (1, 2, 1, 3, 35)").get();
+
+        auto msg = e.execute_cql("SELECT * FROM t WHERE (c, d) = (1, 2) ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(18),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(25),
+            },
+        });
+
+        msg = e.execute_cql("SELECT * FROM t WHERE (c, d) IN ((1, 2), (1,3), (1,4)) ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(18),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(25),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(1),
+                int32_type->decompose(3),
+                int32_type->decompose(35),
+            },
+        });
+
+        msg = e.execute_cql("SELECT * FROM t WHERE (c, d) < (1, 3) ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(15),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(18),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(25),
+            },
+        });
+
+        msg = e.execute_cql("SELECT * FROM t WHERE (c, d) < (1, 3) AND (c, d) > (1, 1) ALLOW FILTERING").get0();
+        assert_that(msg).is_rows().with_rows_ignore_order({
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(18),
+            },
+            {
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(1),
+                int32_type->decompose(2),
+                int32_type->decompose(25),
+            },
+        });
+    });
+}
+
 SEASTAR_TEST_CASE(test_allow_filtering_clustering_column) {
     return do_with_cql_env_thread([] (cql_test_env& e) {
         e.execute_cql("CREATE TABLE t (k int, c int, v int, PRIMARY KEY (k, c));").get();
