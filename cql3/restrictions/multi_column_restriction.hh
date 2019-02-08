@@ -100,12 +100,14 @@ public:
                          const row& cells,
                          const query_options& options,
                          gc_clock::time_point now) const override {
-        for (auto&& range : bounds_ranges(options)) {
-            if (!range.contains(ckey, clustering_key_prefix::prefix_equal_tri_compare(schema))) {
-                return false;
-            }
-        }
-        return true;
+        return is_satisfied_by(schema, ckey, options);
+    }
+
+    bool is_satisfied_by(const schema& schema, const clustering_key_prefix& ckey, const query_options& options) const {
+        const auto& ranges = bounds_ranges(options);
+        return std::any_of(ranges.begin(), ranges.end(), [&ckey, &schema] (const bounds_range_type& range) {
+            return range.contains(query::clustering_range(ckey), clustering_key_prefix::prefix_equal_tri_compare(schema));
+        });
     }
 
 protected:
