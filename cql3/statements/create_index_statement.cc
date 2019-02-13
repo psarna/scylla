@@ -61,12 +61,14 @@ create_index_statement::create_index_statement(::shared_ptr<cf_name> name,
                                                ::shared_ptr<index_name> index_name,
                                                std::vector<::shared_ptr<index_target::raw>> raw_targets,
                                                ::shared_ptr<index_prop_defs> properties,
-                                               bool if_not_exists)
+                                               bool if_not_exists,
+                                               bool is_local)
     : schema_altering_statement(name)
     , _index_name(index_name->get_idx())
     , _raw_targets(raw_targets)
     , _properties(properties)
     , _if_not_exists(if_not_exists)
+    , _is_local(is_local)
 {
 }
 
@@ -256,7 +258,7 @@ create_index_statement::announce_migration(service::storage_proxy& proxy, bool i
     } else {
         kind = schema->is_compound() ? index_metadata_kind::composites : index_metadata_kind::keys;
     }
-    auto index = make_index_metadata(schema, targets, accepted_name, kind, index_options);
+    auto index = make_index_metadata(schema, targets, accepted_name, kind, index_options, index_metadata::is_local_index(_is_local));
     auto existing_index = schema->find_index_noname(index);
     if (existing_index) {
         if (_if_not_exists) {
@@ -290,7 +292,8 @@ index_metadata create_index_statement::make_index_metadata(schema_ptr schema,
                                                            const std::vector<::shared_ptr<index_target>>& targets,
                                                            const sstring& name,
                                                            index_metadata_kind kind,
-                                                           const index_options_map& options)
+                                                           const index_options_map& options,
+                                                           index_metadata::is_local_index local)
 {
     index_options_map new_options = options;
     auto target_option = boost::algorithm::join(targets | boost::adaptors::transformed(
@@ -298,7 +301,7 @@ index_metadata create_index_statement::make_index_metadata(schema_ptr schema,
                 return target->as_string();
             }), ",");
     new_options.emplace(index_target::target_option_name, target_option);
-    return index_metadata{name, new_options, kind};
+    return index_metadata{name, new_options, kind, local};
 }
 
 }

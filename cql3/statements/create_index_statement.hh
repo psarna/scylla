@@ -70,12 +70,13 @@ class create_index_statement : public schema_altering_statement {
     const std::vector<::shared_ptr<index_target::raw>> _raw_targets;
     const ::shared_ptr<index_prop_defs> _properties;
     const bool _if_not_exists;
+    const bool _is_local;
     cql_stats* _cql_stats = nullptr;
 
 public:
     create_index_statement(::shared_ptr<cf_name> name, ::shared_ptr<index_name> index_name,
             std::vector<::shared_ptr<index_target::raw>> raw_targets,
-            ::shared_ptr<index_prop_defs> properties, bool if_not_exists);
+            ::shared_ptr<index_prop_defs> properties, bool if_not_exists, bool _is_local);
 
     future<> check_access(const service::client_state& state) override;
     void validate(service::storage_proxy&, const service::client_state& state) override;
@@ -93,7 +94,8 @@ private:
                                               const std::vector<::shared_ptr<index_target>>& targets,
                                               const sstring& name,
                                               index_metadata_kind kind,
-                                              const index_options_map& options);
+                                              const index_options_map& options,
+                                              index_metadata::is_local_index local);
 };
 
 }
