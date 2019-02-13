@@ -458,6 +458,7 @@ schema_ptr indexes() {
         {
          {"kind", utf8_type},
          {"options", map_type_impl::get_instance(utf8_type, utf8_type, false)},
+         {"local", boolean_type}
         },
         // static columns
         {},
@@ -2203,6 +2204,7 @@ static void add_index_to_schema_mutation(schema_ptr table,
 {
     auto ckey = clustering_key::from_exploded(*m.schema(), {utf8_type->decompose(table->cf_name()), utf8_type->decompose(index.name())});
     m.set_clustered_cell(ckey, "kind", serialize_index_kind(index.kind()), timestamp);
+    m.set_clustered_cell(ckey, "local", bool(index.local()), timestamp);
     store_map(m, ckey, "options", timestamp, index.options());
 }
 
@@ -2279,7 +2281,8 @@ static index_metadata create_index_from_index_row(const query::result_set_row& r
         options.emplace(value_cast<sstring>(entry.first), value_cast<sstring>(entry.second));
     }
     index_metadata_kind kind = deserialize_index_kind(row.get_nonnull<sstring>("kind"));
-    return index_metadata{index_name, options, kind};
+    index_metadata::is_local_index local(row.get_nonnull<bool>("local"));
+    return index_metadata{index_name, options, kind, local};
 }
 
 /*
