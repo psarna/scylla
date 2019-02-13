@@ -482,3 +482,44 @@ SEASTAR_TEST_CASE(test_prepared_statement_is_invalidated_by_schema_change) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_inherit_base_schema_params_in_si) {
+    return do_with_cql_env_thread([](cql_test_env& e) {
+        e.execute_cql("create keyspace test with replication = { 'class' : 'SimpleStrategy', 'replication_factor' : 1 };").get();
+        e.execute_cql(
+                "CREATE TABLE test.data_points ("
+                "    rack_id text,"
+                "    sensor_id text,"
+                "    curr_epoch timestamp,"
+                "    value int,"
+                "    PRIMARY KEY ((rack_id, sensor_id), curr_epoch)"
+                ") WITH CLUSTERING ORDER BY (curr_epoch DESC)"
+                "    AND bloom_filter_fp_chance = 0.01"
+                "    AND caching = {'keys': 'ALL', 'rows_per_partition': 'ALL'}"
+                "    AND comment = ''"
+                "    AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': '60', 'compaction_window_unit': 'MINUTES'}"
+                "    AND compression = {'sstable_compression': 'org.apache.cassandra.io.compress.LZ4Compressor'}"
+                "    AND crc_check_chance = 0.5"
+                "    AND dclocal_read_repair_chance = 0.2"
+                "    AND default_time_to_live = 16"
+                "    AND gc_grace_seconds = 17"
+                "    AND max_index_interval = 36"
+                "    AND memtable_flush_period_in_ms = 1500"
+                "    AND min_index_interval = 32"
+                "    AND read_repair_chance = 0.1"
+                "    AND speculative_retry = '95.0PERCENTILE';"
+        ).get();
+        e.execute_cql("CREATE INDEX ON test.data_points(curr_epoch)").get();
+        schema_ptr index_schema = e.local_db().find_schema("test", "data_points_curr_epoch_idx_index");
+        BOOST_REQUIRE(index_schema->compaction_strategy() == sstables::compaction_strategy_type::time_window);
+        BOOST_REQUIRE(index_schema->compaction_strategy_options().at("compaction_window_size") == "60" && index_schema->compaction_strategy_options().at("compaction_window_unit") == "MINUTES");
+        BOOST_REQUIRE_EQUAL(index_schema->dc_local_read_repair_chance(), 0.2);
+        BOOST_REQUIRE_EQUAL(index_schema->crc_check_chance(), 0.5);
+        BOOST_REQUIRE_EQUAL(std::chrono::duration_cast<std::chrono::seconds>(index_schema->gc_grace_seconds()).count(), 17);
+        BOOST_REQUIRE_EQUAL(index_schema->max_index_interval(), 36);
+        BOOST_REQUIRE_EQUAL(index_schema->min_index_interval(), 32);
+        BOOST_REQUIRE_EQUAL(index_schema->memtable_flush_period(), 1500);
+        BOOST_REQUIRE_EQUAL(index_schema->read_repair_chance(), 0.1);
+        BOOST_REQUIRE_EQUAL(index_schema->speculative_retry().to_sstring(), sstring("95.0PERCENTILE"));
+    });
+}
