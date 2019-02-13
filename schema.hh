@@ -184,6 +184,7 @@ class index_metadata final {
     sstring _name;
     index_metadata_kind _kind;
     index_options_map _options;
+    bool _local;
 public:
     index_metadata(const sstring& name, const index_options_map& options, index_metadata_kind kind);
     bool operator==(const index_metadata& other) const;
@@ -192,6 +193,7 @@ public:
     const sstring& name() const;
     const index_metadata_kind kind() const;
     const index_options_map& options() const;
+    bool local() const;
     static sstring get_default_index_name(const sstring& cf_name, std::optional<sstring> root);
 };
 

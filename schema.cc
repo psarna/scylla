@@ -454,7 +454,15 @@ index_metadata::index_metadata(const sstring& name,
     , _name{name}
     , _kind{kind}
     , _options{options}
-{}
+{
+    _local = [&] {
+        if (_kind != index_metadata_kind::custom) {
+            return false;
+        }
+        auto options_it = _options.find(cql3::statements::index_target::custom_index_option_name);
+        return options_it != _options.end() && options_it->second == cql3::statements::index_prop_defs::LOCAL_INDEX_CLASS;
+    }();
+}
 
 bool index_metadata::operator==(const index_metadata& other) const {
     return _id == other._id
@@ -481,6 +489,10 @@ const index_metadata_kind index_metadata::kind() const {
 
 const index_options_map& index_metadata::options() const {
     return _options;
+}
+
+bool index_metadata::local() const {
+    return _local;
 }
 
 sstring index_metadata::get_default_index_name(const sstring& cf_name,
