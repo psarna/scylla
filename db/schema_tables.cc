@@ -2282,7 +2282,9 @@ static index_metadata create_index_from_index_row(const query::result_set_row& r
         options.emplace(value_cast<sstring>(entry.first), value_cast<sstring>(entry.second));
     }
     index_metadata_kind kind = deserialize_index_kind(row.get_nonnull<sstring>("kind"));
-    return index_metadata{index_name, options, kind};
+    auto it = options.find("local");
+    const bool is_local = it != options.end() && it->second == "1";
+    return index_metadata{index_name, options, kind, index_metadata::is_local_index(is_local)};
 }
 
 /*

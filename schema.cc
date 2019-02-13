@@ -456,7 +456,12 @@ index_metadata::index_metadata(const sstring& name,
     , _kind{kind}
     , _options{options}
     , _local{local}
-{}
+{
+    // For serialization backwards compatibility
+    if (_local) {
+        _options["local"] = "1";
+    }
+}
 
 bool index_metadata::operator==(const index_metadata& other) const {
     return _id == other._id
