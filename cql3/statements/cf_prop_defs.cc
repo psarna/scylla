@@ -185,6 +185,10 @@ void cf_prop_defs::apply_to_builder(schema_builder& builder, const db::extension
         builder.set_dc_local_read_repair_chance(get_double(KW_DCLOCALREADREPAIRCHANCE, builder.get_dc_local_read_repair_chance()));
     }
 
+    if (has_property(KW_CRC_CHECK_CHANCE)) {
+        builder.set_crc_check_chance(get_double(KW_CRC_CHECK_CHANCE, builder.get_crc_check_chance()));
+    }
+
     if (has_property(KW_GCGRACESECONDS)) {
         builder.set_gc_grace_seconds(get_int(KW_GCGRACESECONDS, builder.get_gc_grace_seconds()));
     }
