@@ -449,11 +449,13 @@ bool operator==(const schema& x, const schema& y)
 
 index_metadata::index_metadata(const sstring& name,
                                const index_options_map& options,
-                               index_metadata_kind kind)
+                               index_metadata_kind kind,
+                               is_local_index local)
     : _id{utils::UUID_gen::get_name_UUID(name)}
     , _name{name}
     , _kind{kind}
     , _options{options}
+    , _local{local}
 {}
 
 bool index_metadata::operator==(const index_metadata& other) const {
@@ -464,7 +466,7 @@ bool index_metadata::operator==(const index_metadata& other) const {
 }
 
 bool index_metadata::equals_noname(const index_metadata& other) const {
-    return _kind == other._kind && _options == other._options;
+    return _kind == other._kind && _options == other._options && _local == other._local;
 }
 
 const utils::UUID& index_metadata::id() const {
@@ -481,6 +483,10 @@ const index_metadata_kind index_metadata::kind() const {
 
 const index_options_map& index_metadata::options() const {
     return _options;
+}
+
+const index_metadata::is_local_index index_metadata::local() const {
+    return _local;
 }
 
 sstring index_metadata::get_default_index_name(const sstring& cf_name,
