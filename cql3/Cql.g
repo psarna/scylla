@@ -814,13 +814,20 @@ createIndexStatement returns [::shared_ptr<create_index_statement> expr]
         bool if_not_exists = false;
         auto name = ::make_shared<cql3::index_name>();
         std::vector<::shared_ptr<index_target::raw>> targets;
+        std::vector<::shared_ptr<cql3::column_identifier::raw>> pkey_columns;
     }
     : K_CREATE (K_CUSTOM { props->is_custom = true; })? K_INDEX (K_IF K_NOT K_EXISTS { if_not_exists = true; } )?
-        (idxName[name])? K_ON cf=columnFamilyName '(' (target1=indexIdent { targets.emplace_back(target1); } (',' target2=indexIdent { targets.emplace_back(target2); } )*)? ')'
+        (idxName[name])? K_ON cf=columnFamilyName
+            ( '(' identList=indexIdentList ')'
+            | '(' '(' c1=cident { pkey_columns.push_back(c1); } ( ',' cn=cident { pkey_columns.push_back(cn); } )* ')' ',' identList=indexIdentList ')' ) { targets=std::move(identList); }
         (K_USING cls=STRING_LITERAL { props->custom_class = sstring{$cls.text}; })?
         (K_WITH properties[props])?
-      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists, std::vector<::shared_ptr<cql3::column_identifier::raw>>()); }
+      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists, std::move(pkey_columns)); }
     ;
+
+indexIdentList returns [std::vector<::shared_ptr<index_target::raw>> targets]
+	: (target1=indexIdent { targets.emplace_back(target1); } (',' target2=indexIdent { $targets.emplace_back(target2); } )*)?
+	;
 
 indexIdent returns [::shared_ptr<index_target::raw> id]
     : c=cident                   { $id = index_target::raw::values_of(c); }
