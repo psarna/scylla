@@ -810,14 +810,15 @@ createIndexStatement returns [::shared_ptr<create_index_statement> expr]
     @init {
         auto props = make_shared<index_prop_defs>();
         bool if_not_exists = false;
+        bool is_local = false;
         auto name = ::make_shared<cql3::index_name>();
         std::vector<::shared_ptr<index_target::raw>> targets;
     }
-    : K_CREATE (K_CUSTOM { props->is_custom = true; })? K_INDEX (K_IF K_NOT K_EXISTS { if_not_exists = true; } )?
+    : K_CREATE (K_CUSTOM { props->is_custom = true; } | K_LOCAL {is_local = true;} | K_GLOBAL {is_local = false;})? K_INDEX (K_IF K_NOT K_EXISTS { if_not_exists = true; } )?
         (idxName[name])? K_ON cf=columnFamilyName '(' (target1=indexIdent { targets.emplace_back(target1); } (',' target2=indexIdent { targets.emplace_back(target2); } )*)? ')'
         (K_USING cls=STRING_LITERAL { props->custom_class = sstring{$cls.text}; })?
         (K_WITH properties[props])?
-      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists, false); }
+      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists, is_local); }
     ;
 
 indexIdent returns [::shared_ptr<index_target::raw> id]
@@ -1865,6 +1866,9 @@ K_EMPTY:       E M P T Y;
 
 K_BYPASS:      B Y P A S S;
 K_CACHE:       C A C H E;
+
+K_LOCAL:       S C Y L L A '_' L O C A L;
+K_GLOBAL:      S C Y L L A '_' G L O B A L;
 
 K_SCYLLA_TIMEUUID_LIST_INDEX: S C Y L L A '_' T I M E U U I D '_' L I S T '_' I N D E X;
 K_SCYLLA_COUNTER_SHARD_LIST: S C Y L L A '_' C O U N T E R '_' S H A R D '_' L I S T; 
