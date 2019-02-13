@@ -819,7 +819,7 @@ createIndexStatement returns [::shared_ptr<create_index_statement> expr]
         (idxName[name])? K_ON cf=columnFamilyName '(' (target1=indexIdent { targets.emplace_back(target1); } (',' target2=indexIdent { targets.emplace_back(target2); } )*)? ')'
         (K_USING cls=STRING_LITERAL { props->custom_class = sstring{$cls.text}; })?
         (K_WITH properties[props])?
-      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists); }
+      { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists, std::vector<::shared_ptr<cql3::column_identifier::raw>>()); }
     ;
 
 indexIdent returns [::shared_ptr<index_target::raw> id]
