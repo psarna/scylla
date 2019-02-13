@@ -141,6 +141,24 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
     }
     const sstring where_clause = format("{} IS NOT NULL", cql3::util::maybe_quote(index_target_name));
     builder.with_view_info(*schema, false, where_clause);
+
+    // Inherit base table parameters
+    builder.set_bloom_filter_fp_chance(schema->bloom_filter_fp_chance());
+    builder.set_caching_options(schema->caching_options());
+    builder.set_compaction_strategy(schema->compaction_strategy());
+    builder.set_compaction_strategy_options(schema->compaction_strategy_options());
+    builder.set_compressor_params(schema->get_compressor_params());
+    builder.set_crc_check_chance(schema->crc_check_chance());
+    builder.set_dc_local_read_repair_chance(schema->dc_local_read_repair_chance());
+    builder.set_default_time_to_live(schema->default_time_to_live());
+    builder.set_gc_grace_seconds(std::chrono::duration_cast<std::chrono::seconds>(schema->gc_grace_seconds()).count());
+    builder.set_max_index_interval(schema->max_index_interval());
+    builder.set_memtable_flush_period(schema->memtable_flush_period());
+    builder.set_min_index_interval(schema->min_index_interval());
+    builder.set_read_repair_chance(schema->read_repair_chance());
+    builder.set_speculative_retry(schema->speculative_retry().to_sstring());
+    builder.set_extensions(schema->extensions());
+
     return view_ptr{builder.build()};
 }
 
