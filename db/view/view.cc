@@ -259,6 +259,8 @@ private:
     row_marker compute_row_marker(const clustering_row& base_row) const;
     dht::token token_for(const partition_key& base_key);
     deletable_row& get_view_row(const partition_key& base_key, const clustering_row& update);
+    bool can_skip_view_updates_with_live_row_marker(const clustering_row& update, const clustering_row& existing) const;
+    bool can_skip_view_updates_without_live_row_marker(const clustering_row& update, const clustering_row& existing) const;
     void create_entry(const partition_key& base_key, const clustering_row& update, gc_clock::time_point now);
     void delete_old_entry(const partition_key& base_key, const clustering_row& existing, const clustering_row& update, gc_clock::time_point now);
     void do_delete_old_entry(const partition_key& base_key, const clustering_row& existing, const clustering_row& update, gc_clock::time_point now);
@@ -529,6 +531,46 @@ void view_updates::do_delete_old_entry(const partition_key& base_key, const clus
     r.apply(update.tomb());
 }
 
+bool view_updates::can_skip_view_updates_with_live_row_marker(const clustering_row& update, const clustering_row& existing) const {
+    row diff = update.cells().difference(*_base, column_kind::regular_column, existing.cells());
+    return boost::algorithm::all_of(_selected_base_columns, [&diff] (const column_definition* cdef) {
+        return diff.find_cell(cdef->id) == nullptr;
+    });
+}
+
+bool view_updates::can_skip_view_updates_without_live_row_marker(const clustering_row& update, const clustering_row& existing) const {
+    const row& existing_row = existing.cells();
+    const row& updated_row = update.cells();
+    row diff = updated_row.difference(*_base, column_kind::regular_column, existing_row);
+    return boost::algorithm::all_of(_base->all_columns(), [this, &diff, &updated_row, &existing_row] (const column_definition& cdef) {
+        // We can skip columns that were not changed
+        if (diff.find_cell(cdef.id) == nullptr) {
+            return true;
+        }
+        // We cannot skip if any column is selected in view
+        auto it = _view->columns_by_name().find(cdef.name());
+        if (it != _view->columns_by_name().end() && !it->second->is_view_virtual()) {
+            return false;
+        }
+        // We cannot skip if the value was created or deleted
+        auto* existing_cell = existing_row.find_cell(cdef.id);
+        auto* updated_cell = updated_row.find_cell(cdef.id);
+        if (existing_cell == nullptr || updated_cell == nullptr) {
+            return existing_cell == updated_cell;
+        }
+        if (!cdef.is_atomic()) {
+            return true;
+        }
+        atomic_cell_view existing_cell_view = existing_cell->as_atomic_cell(cdef);
+        atomic_cell_view updated_cell_view = updated_cell->as_atomic_cell(cdef);
+        if (existing_cell_view.is_live() != updated_cell_view.is_live()) {
+            return false;
+        }
+        // We cannot skip if the change updates TTL
+        return !existing_cell_view.is_live_and_has_ttl() && !updated_cell_view.is_live_and_has_ttl();
+    });
+}
+
 /**
  * Creates the updates to apply to the existing view entry given the base table row before
  * and after the update, assuming that the update hasn't changed to which view entry the
@@ -538,6 +580,18 @@ void view_updates::do_delete_old_entry(const partition_key& base_key, const clus
  * applying anything.
  */
 void view_updates::update_entry(const partition_key& base_key, const clustering_row& update, const clustering_row& existing, gc_clock::time_point now) {
+    if (existing.marker().is_live() && !existing.marker().is_expiring()) {
+        if (can_skip_view_updates_with_live_row_marker(update, existing)) {
+            vlogger.debug("Skipping view update with live, non-expiring row marker");
+            return;
+        }
+    } else {
+        if (can_skip_view_updates_without_live_row_marker(update, existing)) {
+            vlogger.debug("Skipping view update with dead or expiring row marker");
+            return;
+        }
+    }
+
     // While we know update and existing correspond to the same view entry,
     // they may not match the view filter.
     if (is_partition_key_empty(*_base, *_view, base_key, existing) || !matches_view_filter(*_base, _view_info, base_key, existing, now)) {
