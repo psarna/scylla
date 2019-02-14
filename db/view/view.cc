@@ -223,13 +223,21 @@ class view_updates final {
     const view_info& _view_info;
     schema_ptr _base;
     std::unordered_map<partition_key, mutation_partition, partition_key::hashing, partition_key::equality> _updates;
+    std::vector<const column_definition*> _selected_base_columns;
 public:
     explicit view_updates(view_ptr view, schema_ptr base)
             : _view(std::move(view))
             , _view_info(*_view->view_info())
             , _base(std::move(base))
-            , _updates(8, partition_key::hashing(*_view), partition_key::equality(*_view)) {
-    }
+            , _updates(8, partition_key::hashing(*_view), partition_key::equality(*_view))
+            , _selected_base_columns(boost::copy_range<std::vector<const column_definition*>>(
+                boost::adaptors::transform(_base->all_columns(), [] (const column_definition& cdef) {return &cdef;}) |
+                boost::adaptors::filtered([this] (const column_definition* cdef) {
+                    auto it = _view->columns_by_name().find(cdef->name());
+                    return it != _view->columns_by_name().end() && !it->second->is_view_virtual();
+                })
+            ))
+        { }
 
     void move_to(std::vector<frozen_mutation_and_schema>& mutations) && {
         auto& partitioner = dht::global_partitioner();
