@@ -618,3 +618,78 @@ SEASTAR_TEST_CASE(test_secondary_index_contains_virtual_columns) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_local_secondary_index) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("create table t (p int, c int, v1 int, v2 int, primary key(p, c))").get();
+        e.execute_cql("create index local_t_v1 on t ((p),v1)").get();
+        BOOST_REQUIRE_THROW(e.execute_cql("create index local_t_p on t(p, v2)").get(), std::exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("create index local_t_p on t((v1), v2)").get(), std::exception);
+
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,1,1,1)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,2,3,2)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,3,3,3)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,4,5,6)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (2,1,3,4)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (2,1,3,5)").get();
+
+        BOOST_REQUIRE_THROW(e.execute_cql("select * from t where v1 = 1").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto res = e.execute_cql("select * from t where p = 1 and v1 = 3").get0();
+            assert_that(res).is_rows().with_rows({
+                {{int32_type->decompose(1)}, {int32_type->decompose(2)}, {int32_type->decompose(3)}, {int32_type->decompose(2)}},
+                {{int32_type->decompose(1)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}},
+            });
+        });
+
+        const table::stats& index_table_stats = e.local_db().find_column_family("ks", "local_t_v1_index").get_stats();
+        BOOST_REQUIRE_EQUAL(index_table_stats.reads.hist.count, 1);
+
+        // Even with local indexes present, filtering should work without issues
+        auto res = e.execute_cql("select * from t where v1 = 1 ALLOW FILTERING").get0();
+        assert_that(res).is_rows().with_rows({
+            {{int32_type->decompose(1)}, {int32_type->decompose(1)}, {int32_type->decompose(1)}, {int32_type->decompose(1)}},
+        });
+        BOOST_REQUIRE_EQUAL(index_table_stats.reads.hist.count, 1);
+    });
+}
+
+SEASTAR_TEST_CASE(test_local_and_global_secondary_index) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        e.execute_cql("create table t (p int, c int, v1 int, v2 int, primary key(p, c))").get();
+        e.execute_cql("create index local_t_v1 on t ((p),v1)").get();
+        e.execute_cql("create index global_t_v1 on t(v1)").get();
+
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,1,1,1)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,2,3,2)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,3,3,3)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (1,4,5,6)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (2,1,3,4)").get();
+        e.execute_cql("insert into t (p,c,v1,v2) values (2,6,3,5)").get();
+
+        eventually([&] {
+            auto res = e.execute_cql("select * from t where p = 1 and v1 = 3").get0();
+            assert_that(res).is_rows().with_rows({
+                {{int32_type->decompose(1)}, {int32_type->decompose(2)}, {int32_type->decompose(3)}, {int32_type->decompose(2)}},
+                {{int32_type->decompose(1)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}},
+            });
+        });
+
+        const table::stats& local_index_table_stats = e.local_db().find_column_family("ks", "local_t_v1_index").get_stats();
+        const table::stats& global_index_table_stats = e.local_db().find_column_family("ks", "global_t_v1_index").get_stats();
+
+        BOOST_REQUIRE_EQUAL(local_index_table_stats.reads.hist.count, 1);
+
+        auto res = e.execute_cql("select * from t where v1 = 3").get0();
+        BOOST_REQUIRE_EQUAL(global_index_table_stats.reads.hist.count, 1);
+        assert_that(res).is_rows().with_rows_ignore_order({
+            {{int32_type->decompose(1)}, {int32_type->decompose(2)}, {int32_type->decompose(3)}, {int32_type->decompose(2)}},
+            {{int32_type->decompose(1)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}, {int32_type->decompose(3)}},
+            {{int32_type->decompose(2)}, {int32_type->decompose(1)}, {int32_type->decompose(3)}, {int32_type->decompose(4)}},
+            {{int32_type->decompose(2)}, {int32_type->decompose(6)}, {int32_type->decompose(3)}, {int32_type->decompose(5)}},
+        });
+
+        BOOST_REQUIRE_EQUAL(global_index_table_stats.reads.hist.count, 1);
+    });
+}
