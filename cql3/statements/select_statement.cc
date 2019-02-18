@@ -883,6 +883,56 @@ static dht::partition_range_vector get_partition_ranges_for_posting_list(schema_
     return partition_ranges;
 }
 
+static query::partition_slice get_partition_slice_for_posting_list(schema_ptr base_schema, schema_ptr view_schema,
+        const secondary_index::index& index, ::shared_ptr<restrictions::statement_restrictions> base_restrictions, const query_options& options) {
+    partition_slice_builder partition_slice_builder{*view_schema};
+
+    if (!base_restrictions->has_partition_key_unrestricted_components()) {
+        auto single_pk_restrictions = dynamic_pointer_cast<restrictions::single_column_partition_key_restrictions>(base_restrictions->get_partition_key_restrictions());
+        // Only EQ restrictions on base partition key can be used in an index view query
+        if (single_pk_restrictions && single_pk_restrictions->is_all_eq()) {
+            ::shared_ptr<restrictions::single_column_clustering_key_restrictions> clustering_restrictions;
+            // For local indexes, the first clustering key is the indexed column itself, followed by base clustering key
+            if (index.metadata().local()) {
+                clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(view_schema, true);
+                const column_definition* cdef = base_schema->get_column_definition(to_bytes(index.target_column()));
+                for (const auto& index_restriction : base_restrictions->index_restrictions()) {
+                    bytes_opt value = index_restriction->value_for(*cdef, options);
+                    if (value) {
+                        auto index_eq_restriction = ::make_shared<restrictions::single_column_restriction::EQ>(*cdef, ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(*value)));
+                        clustering_restrictions->merge_with(index_eq_restriction);
+                    }
+                }
+            } else {
+                clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(view_schema, *single_pk_restrictions);
+                // Computed token column needs to be added to index view restrictions
+                const column_definition& token_cdef = *view_schema->clustering_key_columns().begin();
+                auto base_pk = partition_key::from_optional_exploded(*base_schema, base_restrictions->get_partition_key_restrictions()->values(options));
+                bytes token_value = dht::global_partitioner().token_to_bytes(dht::global_partitioner().get_token(*base_schema, base_pk));
+                auto token_restriction = ::make_shared<restrictions::single_column_restriction::EQ>(token_cdef, ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(token_value)));
+                clustering_restrictions->merge_with(token_restriction);
+            }
+
+            if (base_restrictions->get_clustering_columns_restrictions()->prefix_size() > 0) {
+                auto single_ck_restrictions = dynamic_pointer_cast<restrictions::single_column_clustering_key_restrictions>(base_restrictions->get_clustering_columns_restrictions());
+                if (single_ck_restrictions) {
+                    auto prefix_restrictions = single_ck_restrictions->get_longest_prefix_restrictions();
+                    auto clustering_restrictions_from_base = ::make_shared<restrictions::single_column_clustering_key_restrictions>(view_schema, *prefix_restrictions);
+                    for (auto restriction_it : clustering_restrictions_from_base->restrictions()) {
+                        clustering_restrictions->merge_with(restriction_it.second);
+                    }
+                }
+            }
+
+            partition_slice_builder.with_ranges(clustering_restrictions->bounds_ranges(options));
+        }
+    } else if (index.metadata().local()) {
+        throw exceptions::invalid_request_exception(format("Queries that use local indexing ({}) must specify full base partition key", index.metadata().name()));
+    }
+
+    return partition_slice_builder.build();
+}
+
 // Utility function for reading from the index view (get_index_view()))
 // the posting-list for a particular value of the indexed column.
 // Remember a secondary index can only be created on a single column.
@@ -904,37 +954,8 @@ read_posting_list(service::storage_proxy& proxy,
                   cql3::cql_stats& stats)
 {
     dht::partition_range_vector partition_ranges = get_partition_ranges_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
+    auto partition_slice = get_partition_slice_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
 
-    partition_slice_builder partition_slice_builder{*view_schema};
-
-    if (!base_restrictions->has_partition_key_unrestricted_components()) {
-        auto single_pk_restrictions = dynamic_pointer_cast<restrictions::single_column_partition_key_restrictions>(base_restrictions->get_partition_key_restrictions());
-        // Only EQ restrictions on base partition key can be used in an index view query
-        if (single_pk_restrictions && single_pk_restrictions->is_all_eq()) {
-            auto clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(view_schema, *single_pk_restrictions);
-            // Computed token column needs to be added to index view restrictions
-            const column_definition& token_cdef = *view_schema->clustering_key_columns().begin();
-            auto base_pk = partition_key::from_optional_exploded(*base_schema, base_restrictions->get_partition_key_restrictions()->values(options));
-            bytes token_value = dht::global_partitioner().token_to_bytes(dht::global_partitioner().get_token(*base_schema, base_pk));
-            auto token_restriction = ::make_shared<restrictions::single_column_restriction::EQ>(token_cdef, ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(token_value)));
-            clustering_restrictions->merge_with(token_restriction);
-
-            if (base_restrictions->get_clustering_columns_restrictions()->prefix_size() > 0) {
-                auto single_ck_restrictions = dynamic_pointer_cast<restrictions::single_column_clustering_key_restrictions>(base_restrictions->get_clustering_columns_restrictions());
-                if (single_ck_restrictions) {
-                    auto prefix_restrictions = single_ck_restrictions->get_longest_prefix_restrictions();
-                    auto clustering_restrictions_from_base = ::make_shared<restrictions::single_column_clustering_key_restrictions>(view_schema, *prefix_restrictions);
-                    for (auto restriction_it : clustering_restrictions_from_base->restrictions()) {
-                        clustering_restrictions->merge_with(restriction_it.second);
-                    }
-                }
-            }
-
-            partition_slice_builder.with_ranges(clustering_restrictions->bounds_ranges(options));
-        }
-    }
-
-    auto partition_slice = partition_slice_builder.build();
     auto cmd = ::make_lw_shared<query::read_command>(
             view_schema->id(),
             view_schema->version(),
