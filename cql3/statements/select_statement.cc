@@ -853,6 +853,33 @@ indexed_table_select_statement::do_execute(service::storage_proxy& proxy,
     }
 }
 
+static dht::partition_range_vector get_partition_ranges_for_posting_list(schema_ptr base_schema, schema_ptr view_schema,
+        const secondary_index::index& index, ::shared_ptr<restrictions::statement_restrictions> base_restrictions, const query_options& options) {
+    dht::partition_range_vector partition_ranges;
+
+    const column_definition* cdef = base_schema->get_column_definition(to_bytes(index.target_column()));
+    if (!cdef) {
+        throw exceptions::invalid_request_exception("Indexed column not found in schema");
+    }
+
+    if (index.metadata().local()) {
+        // Local indexes always share the partition with base replica
+        partition_ranges = base_restrictions->get_partition_key_restrictions()->bounds_ranges(options);
+    } else {
+        for (const auto& index_restriction : base_restrictions->index_restrictions()) {
+            bytes_opt value = index_restriction->value_for(*cdef, options);
+            if (value) {
+                auto pk = partition_key::from_single_value(*view_schema, *value);
+                auto dk = dht::global_partitioner().decorate_key(*view_schema, pk);
+                auto range = dht::partition_range::make_singular(dk);
+                partition_ranges.emplace_back(range);
+            }
+        }
+    }
+
+    return partition_ranges;
+}
+
 // Utility function for reading from the index view (get_index_view()))
 // the posting-list for a particular value of the indexed column.
 // Remember a secondary index can only be created on a single column.
@@ -873,22 +900,7 @@ read_posting_list(service::storage_proxy& proxy,
                   db::timeout_clock::time_point timeout,
                   cql3::cql_stats& stats)
 {
-    dht::partition_range_vector partition_ranges;
-
-    const column_definition* cdef = base_schema->get_column_definition(to_bytes(index.target_column()));
-    if (!cdef) {
-        throw exceptions::invalid_request_exception("Indexed column not found in schema");
-    }
-
-    for (const auto& index_restriction : base_restrictions->index_restrictions()) {
-        bytes_opt value = index_restriction->value_for(*cdef, options);
-        if (value) {
-            auto pk = partition_key::from_single_value(*view_schema, *value);
-            auto dk = dht::global_partitioner().decorate_key(*view_schema, pk);
-            auto range = dht::partition_range::make_singular(dk);
-            partition_ranges.emplace_back(range);
-        }
-    }
+    dht::partition_range_vector partition_ranges = get_partition_ranges_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
 
     partition_slice_builder partition_slice_builder{*view_schema};
 
