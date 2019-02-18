@@ -60,6 +60,8 @@
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
 
+static logging::logger slogger("select_statement");
+
 namespace cql3 {
 
 namespace statements {
@@ -864,6 +866,7 @@ static dht::partition_range_vector get_partition_ranges_for_posting_list(schema_
 
     if (index.metadata().local()) {
         // Local indexes always share the partition with base replica
+        slogger.debug("Using local index");
         partition_ranges = base_restrictions->get_partition_key_restrictions()->bounds_ranges(options);
     } else {
         for (const auto& index_restriction : base_restrictions->index_restrictions()) {
