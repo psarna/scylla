@@ -756,7 +756,16 @@ static void append_base_key_to_index_ck(std::vector<bytes_view>& exploded_index_
 
     //NOTICE(sarna): Executing indexed_table branch implies there was at least 1 index restriction present
     bytes_opt index_pk_value = _restrictions->index_restrictions().front()->value_for(*cdef, options);
-    auto index_pk = partition_key::from_single_value(*_view_schema, *index_pk_value);
+
+    auto index_pk = [&]() {
+        if (_index.metadata().local()) {
+            auto exploded_base_pk = _restrictions->get_partition_key_restrictions()->values(options);
+            return partition_key::from_optional_exploded(*_view_schema, exploded_base_pk);
+        } else {
+            return partition_key::from_single_value(*_view_schema, *index_pk_value);
+        }
+    }();
+
     auto result_view = query::result_view(*results);
     if (!results->row_count() || *results->row_count() == 0) {
         return std::move(paging_state);
@@ -766,10 +775,14 @@ static void append_base_key_to_index_ck(std::vector<bytes_view>& exploded_index_
     std::vector<bytes_view> exploded_index_ck;
     exploded_index_ck.reserve(_view_schema->clustering_key_size());
 
-    dht::i_partitioner& partitioner = dht::global_partitioner();
-    bytes token_bytes = partitioner.token_to_bytes(partitioner.get_token(*_schema, last_base_pk));
-    exploded_index_ck.push_back(bytes_view(token_bytes));
-    append_base_key_to_index_ck<partition_key>(exploded_index_ck, last_base_pk, *cdef);
+    if (_index.metadata().local()) {
+        exploded_index_ck.push_back(bytes_view(*index_pk_value));
+    } else {
+        dht::i_partitioner& partitioner = dht::global_partitioner();
+        bytes token_bytes = partitioner.token_to_bytes(partitioner.get_token(*_schema, last_base_pk));
+        exploded_index_ck.push_back(bytes_view(token_bytes));
+        append_base_key_to_index_ck<partition_key>(exploded_index_ck, last_base_pk, *cdef);
+    }
     if (last_base_ck) {
         append_base_key_to_index_ck<clustering_key>(exploded_index_ck, *last_base_ck, *cdef);
     }
