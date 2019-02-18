@@ -880,28 +880,8 @@ static dht::partition_range_vector get_partition_ranges_for_posting_list(schema_
     return partition_ranges;
 }
 
-// Utility function for reading from the index view (get_index_view()))
-// the posting-list for a particular value of the indexed column.
-// Remember a secondary index can only be created on a single column.
-template<typename KeyType>
-GCC6_CONCEPT(
-    requires (std::is_same_v<KeyType, partition_key> || std::is_same_v<KeyType, clustering_key>)
-)
-static future<::shared_ptr<cql_transport::messages::result_message::rows>>
-read_posting_list(service::storage_proxy& proxy,
-                  schema_ptr view_schema,
-                  schema_ptr base_schema,
-                  const secondary_index::index& index,
-                  ::shared_ptr<restrictions::statement_restrictions> base_restrictions,
-                  const query_options& options,
-                  int32_t limit,
-                  service::query_state& state,
-                  gc_clock::time_point now,
-                  db::timeout_clock::time_point timeout,
-                  cql3::cql_stats& stats)
-{
-    dht::partition_range_vector partition_ranges = get_partition_ranges_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
-
+static query::partition_slice get_partition_slice_for_posting_list(schema_ptr base_schema, schema_ptr view_schema,
+        const secondary_index::index& index, ::shared_ptr<restrictions::statement_restrictions> base_restrictions, const query_options& options) {
     partition_slice_builder partition_slice_builder{*view_schema};
 
     if (!base_restrictions->has_partition_key_unrestricted_components()) {
@@ -931,7 +911,32 @@ read_posting_list(service::storage_proxy& proxy,
         }
     }
 
-    auto partition_slice = partition_slice_builder.build();
+    return partition_slice_builder.build();
+}
+
+// Utility function for reading from the index view (get_index_view()))
+// the posting-list for a particular value of the indexed column.
+// Remember a secondary index can only be created on a single column.
+template<typename KeyType>
+GCC6_CONCEPT(
+    requires (std::is_same_v<KeyType, partition_key> || std::is_same_v<KeyType, clustering_key>)
+)
+static future<::shared_ptr<cql_transport::messages::result_message::rows>>
+read_posting_list(service::storage_proxy& proxy,
+                  schema_ptr view_schema,
+                  schema_ptr base_schema,
+                  const secondary_index::index& index,
+                  ::shared_ptr<restrictions::statement_restrictions> base_restrictions,
+                  const query_options& options,
+                  int32_t limit,
+                  service::query_state& state,
+                  gc_clock::time_point now,
+                  db::timeout_clock::time_point timeout,
+                  cql3::cql_stats& stats)
+{
+    dht::partition_range_vector partition_ranges = get_partition_ranges_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
+    auto partition_slice = get_partition_slice_for_posting_list(base_schema, view_schema, index, base_restrictions, options);
+
     auto cmd = ::make_lw_shared<query::read_command>(
             view_schema->id(),
             view_schema->version(),
