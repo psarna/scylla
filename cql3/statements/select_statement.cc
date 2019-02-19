@@ -862,20 +862,20 @@ static dht::partition_range_vector get_partition_ranges_for_posting_list(schema_
         throw exceptions::invalid_request_exception("Indexed column not found in schema");
     }
 
-  if (index.metadata().local()) {
-      // Local indexes always share the partition with base replica
-      partition_ranges = base_restrictions->get_partition_key_restrictions()->bounds_ranges(options);
-  } else {
-    for (const auto& index_restriction : base_restrictions->index_restrictions()) {
-        bytes_opt value = index_restriction->value_for(*cdef, options);
-        if (value) {
-            auto pk = partition_key::from_single_value(*view_schema, *value);
-            auto dk = dht::global_partitioner().decorate_key(*view_schema, pk);
-            auto range = dht::partition_range::make_singular(dk);
-            partition_ranges.emplace_back(range);
+    if (index.metadata().local()) {
+        // Local indexes always share the partition with base replica
+        partition_ranges = base_restrictions->get_partition_key_restrictions()->bounds_ranges(options);
+    } else {
+        for (const auto& index_restriction : base_restrictions->index_restrictions()) {
+            bytes_opt value = index_restriction->value_for(*cdef, options);
+            if (value) {
+                auto pk = partition_key::from_single_value(*view_schema, *value);
+                auto dk = dht::global_partitioner().decorate_key(*view_schema, pk);
+                auto range = dht::partition_range::make_singular(dk);
+                partition_ranges.emplace_back(range);
+            }
         }
     }
-  }
 
     return partition_ranges;
 }
