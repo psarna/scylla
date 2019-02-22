@@ -814,6 +814,7 @@ indexed_table_select_statement::do_execute(service::storage_proxy& proxy,
                              service::query_state& state,
                              const query_options& options)
 {
+    tracing::trace(state.get_trace_state(), "Using {} index for column {}", _index.metadata().local() ? "local" : "global", _index.target_column());
     tracing::add_table_name(state.get_trace_state(), _view_schema->ks_name(), _view_schema->cf_name());
     tracing::add_table_name(state.get_trace_state(), keyspace(), column_family());
 
