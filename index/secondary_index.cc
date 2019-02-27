@@ -134,4 +134,9 @@ target_parser::target_info target_parser::parse(schema_ptr schema, const sstring
     return info;
 }
 
+bool target_parser::is_local(sstring target_string) {
+    std::cmatch match;
+    return std::regex_match(target_string.data(), match, pk_ck_target_regex);
+}
+
 }
