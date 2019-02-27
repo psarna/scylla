@@ -143,4 +143,18 @@ bool target_parser::is_local(sstring target_string) {
     return std::regex_match(target_string.data(), match, pk_ck_target_regex);
 }
 
+sstring target_parser::get_target_column_name_from_string(const sstring& targets) {
+    std::cmatch match;
+    if (!std::regex_match(targets.data(), match, pk_ck_target_regex)) {
+        return targets;
+    }
+    auto ck_match = match[3].str();
+    auto it = std::sregex_token_iterator(ck_match.begin(), ck_match.end(), key_target_regex);
+    if (it == std::sregex_token_iterator()) {
+        throw std::runtime_error(format("Incorrect clustering key string: {}", ck_match));
+    }
+    auto column_name = it->str();
+    return is_regular_name(column_name) ? sstring(column_name) : unescape(column_name);
+}
+
 }
