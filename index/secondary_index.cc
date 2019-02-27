@@ -43,6 +43,7 @@
 #include "index/target_parser.hh"
 
 #include <regex>
+#include <boost/range/algorithm/find_if.hpp>
 
 const sstring db::index::secondary_index::custom_index_option_name = "class_name";
 const sstring db::index::secondary_index::index_keys_option_name = "index_keys";
@@ -52,41 +53,89 @@ const sstring db::index::secondary_index::index_entries_option_name = "index_key
 namespace secondary_index {
 
 static const std::regex target_regex("^(keys|entries|values|full)\\((.+)\\)$");
+// Partition key and clustering key representation: (PK),CK
+static const std::regex pk_ck_target_regex("^\\(((\\\\.|[^\\)\\\\])+)\\),((\\\\.|[^,\\)\\\\])+)$");
+// Key columns representation: c1,c2,c3,c4,c5
+static const std::regex key_target_regex("^((\\\\.|[^,\\)\\\\])+)(,((\\\\.|[^,\\)\\\\])+))*$");
 
-std::pair<const column_definition*, cql3::statements::index_target::target_type>
-target_parser::parse(schema_ptr schema, const index_metadata& im)
-{
-    sstring target = im.options().at(cql3::statements::index_target::target_option_name);
-    auto result = parse(schema, target);
-    if (!result) {
-        throw exceptions::configuration_exception(format("Unable to parse targets for index {} ({})", im.name(), target));
-    }
-    return *result;
+static sstring escape(const sstring& targets) {
+    static thread_local std::regex unescaped_comma(",");
+    static thread_local std::regex unescaped_end_parentheses("\\)");
+    static thread_local std::regex unescaped_backslash("\\\\");
+    std::string result(targets);
+    result = std::regex_replace(result, unescaped_backslash, "\\\\");
+    result = std::regex_replace(result, unescaped_comma, "\\,");
+    result = std::regex_replace(result, unescaped_end_parentheses, "\\)");
+    return std::move(result);
 }
 
-std::optional<std::pair<const column_definition*, cql3::statements::index_target::target_type>>
-target_parser::parse(schema_ptr schema, const sstring& target)
-{
+static sstring unescape(const sstring& targets) {
+    static thread_local std::regex escaped_comma("\\\\,");
+    static thread_local std::regex escaped_end_parentheses("\\\\\\)");
+    static thread_local std::regex escaped_backslash("\\\\\\\\"); // that's because \ is a special char in both C++ and regex
+    std::string result(targets);
+    result = std::regex_replace(result, escaped_backslash, "\\");
+    result = std::regex_replace(result, escaped_comma, ",");
+    result = std::regex_replace(result, escaped_end_parentheses, ")");
+    return std::move(result);
+}
+
+static bool is_regular_name(const sstring& target) {
+    return boost::find_if(target, [] (char c) { return c == ',' || c == ')' || c == '\\'; }) == target.end();
+}
+
+target_parser::target_info target_parser::parse(schema_ptr schema, const index_metadata& im) {
+    sstring target = im.options().at(cql3::statements::index_target::target_option_name);
+    try {
+        return parse(schema, target);
+    } catch (...) {
+        throw exceptions::configuration_exception(format("Unable to parse targets for index {} ({}): {}", im.name(), target, std::current_exception()));
+    }
+}
+
+target_parser::target_info target_parser::parse(schema_ptr schema, const sstring& target) {
     using namespace cql3::statements;
-    // if the regex matches then the target is in the form "keys(foo)", "entries(bar)" etc
-    // if not, then it must be a simple column name and implictly its type is VALUES
-    sstring column_name;
-    index_target::target_type target_type;
+    target_info info;
+
+    auto get_column = [&schema] (const sstring& name) -> const column_definition* {
+        const sstring& column_name = is_regular_name(name) ? name : unescape(name);
+        const column_definition* cdef = schema->get_column_definition(utf8_type->decompose(column_name));
+        if (!cdef) {
+            throw std::runtime_error(format("Column {} not found", column_name));
+        }
+        return cdef;
+    };
 
     std::cmatch match;
     if (std::regex_match(target.data(), match, target_regex)) {
-        target_type = index_target::from_sstring(match[1].str());
-        column_name = match[2].str();
+        info.type = index_target::from_sstring(match[1].str());
+        info.pk_columns.push_back(get_column(sstring(match[2].str())));
+    } else if (std::regex_match(target.data(), match, pk_ck_target_regex)) {
+        auto pk_match = match[1].str();
+        auto ck_match = match[3].str();
+
+        auto end = std::sregex_token_iterator();
+        for (auto it = std::sregex_token_iterator(pk_match.begin(), pk_match.end(), key_target_regex, {1, 4}); it != end; ++it) {
+            auto column_name = it->str();
+            if (column_name.empty()) {
+                continue;
+            }
+            info.pk_columns.push_back(get_column(column_name));
+        }
+        for (auto it = std::sregex_token_iterator(ck_match.begin(), ck_match.end(), key_target_regex, {1, 4}); it != end; ++it) {
+            auto column_name = it->str();
+            if (column_name.empty()) {
+                continue;
+            }
+            info.ck_columns.push_back(get_column(column_name));
+        }
+        info.type = index_target::target_type::values;
     } else {
-        column_name = target;
-        target_type = index_target::target_type::values;
+        info.pk_columns.push_back(get_column(target));
+        info.type = index_target::target_type::values;
     }
 
-    auto column = schema->get_column_definition(utf8_type->decompose(column_name));
-    if (!column) {
-        return std::nullopt;
-    }
-    return std::make_pair(column, target_type);
+    return info;
 }
 
 }
