@@ -770,3 +770,14 @@ SEASTAR_TEST_CASE(test_local_index_paging) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_malformed_local_index) {
+    return do_with_cql_env_thread([] (auto& e) {
+        e.execute_cql("CREATE TABLE tab (p1 int, p2 int, c1 int, c2 int, v int, PRIMARY KEY ((p1, p2), c1, c2))").get();
+
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE CUSTOM INDEX ON tab (v) USING 'com.scylladb.LocalIndex3'").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE CUSTOM INDEX ON tab (v)").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE CUSTOM INDEX ON tab (p1,p2) USING 'com.scylladb.LocalIndex'").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE CUSTOM INDEX ON tab (c2, v) USING 'com.scylladb.LocalIndex'").get(), exceptions::invalid_request_exception);
+    });
+}
