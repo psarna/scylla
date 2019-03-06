@@ -44,6 +44,8 @@
 
 #include <regex>
 #include <boost/range/algorithm/find_if.hpp>
+#include <boost/algorithm/string/join.hpp>
+#include <boost/range/adaptors.hpp>
 
 #include "json.hh"
 
@@ -137,6 +139,39 @@ sstring target_parser::get_target_column_name_from_string(const sstring& targets
         return pk[0].asString();
     }
     return targets;
+}
+
+sstring target_parser::serialize_targets(const std::vector<::shared_ptr<cql3::statements::index_target>>& targets) {
+    struct as_json_visitor {
+        Json::Value operator()(const std::vector<::shared_ptr<cql3::column_identifier>>& columns) const {
+            Json::Value json_array(Json::arrayValue);
+            for (const auto& column : columns) {
+                json_array.append(Json::Value(column->to_string()));
+            }
+            return json_array;
+        }
+
+        Json::Value operator()(const ::shared_ptr<cql3::column_identifier>& column) const {
+            return Json::Value(column->to_string());
+        }
+    };
+
+    Json::Value json_map(Json::objectValue);
+    Json::Value pk_json = std::visit(as_json_visitor(), targets.front()->value);
+    if (!pk_json.isArray()) {
+        Json::Value pk_array(Json::arrayValue);
+        pk_array.append(std::move(pk_json));
+        pk_json = std::move(pk_array);
+    }
+    json_map[PK_TARGET_KEY] = std::move(pk_json);
+    if (targets.size() > 1) {
+        Json::Value ck_json(Json::arrayValue);
+        for (unsigned i = 1; i < targets.size(); ++i) {
+            ck_json.append(std::visit(as_json_visitor(), targets.at(i)->value));
+        }
+        json_map[CK_TARGET_KEY] = ck_json;
+    }
+    return json::to_sstring(json_map);
 }
 
 }
