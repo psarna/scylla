@@ -161,13 +161,13 @@ sstring target_parser::serialize_targets(const std::vector<::shared_ptr<cql3::st
             return "(" + boost::algorithm::join(columns | boost::adaptors::transformed(
                     [](const ::shared_ptr<cql3::column_identifier>& ident) -> sstring {
                         auto column_name = ident->to_string();
-                        return is_regular_name(column_name) ? column_name : escape(column_name);
+                        return is_regular_name(column_name) ? sstring(column_name) : escape(column_name);
                     }), ",") + ")";
         }
 
         sstring operator()(const ::shared_ptr<cql3::column_identifier>& column) const {
             auto column_name = column->to_string();
-            return is_regular_name(column_name) ? column_name : escape(column_name);
+            return is_regular_name(column_name) ? sstring(column_name) : escape(column_name);
         }
     };
 
