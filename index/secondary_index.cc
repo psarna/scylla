@@ -44,6 +44,8 @@
 
 #include <regex>
 #include <boost/range/algorithm/find_if.hpp>
+#include <boost/algorithm/string/join.hpp>
+#include <boost/range/adaptors.hpp>
 
 const sstring db::index::secondary_index::custom_index_option_name = "class_name";
 const sstring db::index::secondary_index::index_keys_option_name = "index_keys";
@@ -155,6 +157,31 @@ sstring target_parser::get_target_column_name_from_string(const sstring& targets
     }
     auto column_name = it->str();
     return is_regular_name(column_name) ? sstring(column_name) : unescape(column_name);
+}
+
+sstring target_parser::serialize_targets(const std::vector<::shared_ptr<cql3::statements::index_target>>& targets) {
+    struct as_escaped_string_visitor {
+        sstring operator()(const std::vector<::shared_ptr<cql3::column_identifier>>& columns) const {
+            return "(" + boost::algorithm::join(columns | boost::adaptors::transformed(
+                    [](const ::shared_ptr<cql3::column_identifier>& ident) -> sstring {
+                        auto column_name = ident->to_string();
+                        return is_regular_name(column_name) ? column_name : escape(column_name);
+                    }), ",") + ")";
+        }
+
+        sstring operator()(const ::shared_ptr<cql3::column_identifier>& column) const {
+            auto column_name = column->to_string();
+            return is_regular_name(column_name) ? column_name : escape(column_name);
+        }
+    };
+
+    if (targets.size() == 1) {
+        return targets.front()->as_string();
+    }
+    return boost::algorithm::join(targets | boost::adaptors::transformed(
+            [](const auto &target) -> sstring {
+                return std::visit(as_escaped_string_visitor(), target->value);
+            }), ",");
 }
 
 }
