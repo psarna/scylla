@@ -83,11 +83,9 @@ view_info::view_info(const schema& schema, const raw_view_info& raw_view_info)
 cql3::statements::select_statement& view_info::select_statement() const {
     if (!_select_statement) {
         shared_ptr<cql3::statements::raw::select_statement> raw;
-        if (is_index()) {
-            // Token column is the first clustering column
-            auto token_column_it = boost::range::find_if(_schema.all_columns(), std::mem_fn(&column_definition::is_clustering_key));
-            auto real_columns = _schema.all_columns() | boost::adaptors::filtered([this, token_column_it](const column_definition& cdef) {
-                return std::addressof(cdef) != std::addressof(*token_column_it);
+        if (boost::find_if(_schema.all_columns(), std::mem_fn(&column_definition::is_computed)) != _schema.all_columns().end()) {
+            auto real_columns = _schema.all_columns() | boost::adaptors::filtered([this](const column_definition& cdef) {
+                return !cdef.is_computed();
             });
             schema::columns_type columns = boost::copy_range<schema::columns_type>(std::move(real_columns));
             raw = cql3::util::build_select_statement(base_name(), where_clause(), include_all_columns(), columns);
@@ -307,8 +305,8 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
     auto get_value = boost::adaptors::transformed([&, this] (const column_definition& cdef) -> bytes_view {
         auto* base_col = _base->get_column_definition(cdef.name());
         if (!base_col) {
-            if (!_view_info.is_index()) {
-                throw std::logic_error(format("Column {} doesn't exist in base and this view is not backing a secondary index", cdef.name_as_text()));
+            if (!cdef.is_computed()) {
+                throw std::logic_error(format("Column {} doesn't exist in base and it's not a computed column", cdef.name_as_text()));
             }
             auto& partitioner = dht::global_partitioner();
             return linearized_values.emplace_back(partitioner.token_to_bytes(token_for(base_key)));
