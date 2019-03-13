@@ -778,7 +778,7 @@ schema_builder& schema_builder::alter_column_type(bytes name, data_type new_type
     return *this;
 }
 
-schema_builder& schema_builder::mark_column_computed(bytes name, column_computation computation) {
+schema_builder& schema_builder::mark_column_computed(bytes name, column_computation_ptr computation) {
     auto it = boost::find_if(_raw._columns, [&name] (const column_definition& c) { return c.name() == name; });
     assert(it != _raw._columns.end());
     it->set_computed(std::move(computation));
