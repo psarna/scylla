@@ -35,7 +35,6 @@ class view_info final {
     mutable std::optional<dht::partition_range_vector> _partition_ranges;
     // Id of a regular base table column included in the view's PK, if any.
     mutable std::optional<column_id> _base_non_pk_column_in_view_pk;
-    mutable std::optional<bool> _is_index;
 public:
     view_info(const schema& schema, const raw_view_info& raw_view_info);
 
@@ -58,8 +57,6 @@ public:
     const sstring& where_clause() const {
         return _raw.where_clause();
     }
-
-    bool is_index() const;
 
     cql3::statements::select_statement& select_statement() const;
     const query::partition_slice& partition_slice() const;
