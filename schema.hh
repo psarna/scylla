@@ -77,6 +77,9 @@ enum class column_kind { partition_key, clustering_key, static_column, regular_c
 
 enum class column_view_virtual { no, yes };
 
+struct column_computed_tag {};
+using column_computed = bool_class<column_computed_tag>;
+
 sstring to_sstring(column_kind k);
 bool is_compatible(column_kind k1, column_kind k2);
 
@@ -210,6 +213,7 @@ private:
     bool _is_atomic;
     bool _is_counter;
     column_view_virtual _is_view_virtual;
+    column_computed _is_computed;
 
     struct thrift_bits {
         thrift_bits()
@@ -225,6 +229,7 @@ public:
     column_definition(bytes name, data_type type, column_kind kind,
         column_id component_index = 0,
         column_view_virtual view_virtual = column_view_virtual::no,
+        column_computed computed = column_computed::no,
         api::timestamp_type dropped_at = api::missing_timestamp);
 
     data_type type;
@@ -251,6 +256,11 @@ public:
     // These columns should be hidden from the user's SELECT queries.
     bool is_view_virtual() const { return _is_view_virtual == column_view_virtual::yes; }
     column_view_virtual view_virtual() const { return _is_view_virtual; }
+    // Computed column values are generated from other columns instead of storing values
+    // provided by the user.
+    bool is_computed() const { return bool(_is_computed); }
+    column_computed computed() const { return _is_computed; }
+    void mark_computed() { _is_computed = column_computed::yes; }
     // Columns hidden from CQL cannot be in any way retrieved by the user,
     // either explicitly or via the '*' operator, or functions, aggregates, etc.
     bool is_hidden_from_cql() const { return is_view_virtual(); }
