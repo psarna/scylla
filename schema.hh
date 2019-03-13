@@ -38,6 +38,7 @@
 #include "compress.hh"
 #include "compaction_strategy.hh"
 #include "caching_options.hh"
+#include "column_computed_info.hh"
 
 using column_count_type = uint32_t;
 
@@ -216,6 +217,7 @@ private:
     bool _is_atomic;
     bool _is_counter;
     column_view_virtual _is_view_virtual;
+    std::optional<column_computed_info> _computed_info;
 
     struct thrift_bits {
         thrift_bits()
@@ -231,6 +233,7 @@ public:
     column_definition(bytes name, data_type type, column_kind kind,
         column_id component_index = 0,
         column_view_virtual view_virtual = column_view_virtual::no,
+        std::optional<column_computed_info> computed = std::nullopt,
         api::timestamp_type dropped_at = api::missing_timestamp);
 
     data_type type;
@@ -257,6 +260,11 @@ public:
     // These columns should be hidden from the user's SELECT queries.
     bool is_view_virtual() const { return _is_view_virtual == column_view_virtual::yes; }
     column_view_virtual view_virtual() const { return _is_view_virtual; }
+    // Computed column values are generated from other columns instead of storing values
+    // provided by the user.
+    bool is_computed() const { return bool(_computed_info); }
+    std::optional<column_computed_info> get_computed_info() const { return _computed_info; }
+    void set_computed(column_computed_info info) { _computed_info = info; }
     // Columns hidden from CQL cannot be in any way retrieved by the user,
     // either explicitly or via the '*' operator, or functions, aggregates, etc.
     bool is_hidden_from_cql() const { return is_view_virtual(); }
