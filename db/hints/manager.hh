@@ -564,12 +564,19 @@ public:
     /// \return A future that resolves when the operation is complete.
     static future<> rebalance(sstring hints_directory);
 
-    virtual void on_join_cluster(const gms::inet_address& endpoint) override {}
-    virtual void on_leave_cluster(const gms::inet_address& endpoint) override {
+    virtual future<> on_join_cluster(const gms::inet_address& endpoint) override {
+        return make_ready_future<>();
+    }
+    virtual future<> on_leave_cluster(const gms::inet_address& endpoint) override {
         drain_for(endpoint);
+        return make_ready_future<>();
     };
-    virtual void on_up(const gms::inet_address& endpoint) override {}
-    virtual void on_down(const gms::inet_address& endpoint) override {}
+    virtual future<> on_up(const gms::inet_address& endpoint) override {
+        return make_ready_future<>();
+    }
+    virtual future<> on_down(const gms::inet_address& endpoint) override {
+        return make_ready_future<>();
+    }
 
 private:
     future<> compute_hints_dir_device_id();

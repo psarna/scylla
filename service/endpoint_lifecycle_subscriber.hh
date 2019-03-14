@@ -64,28 +64,28 @@ public:
      *
      * @param endpoint the newly added endpoint.
      */
-    virtual void on_join_cluster(const gms::inet_address& endpoint) = 0;
+    virtual future<> on_join_cluster(const gms::inet_address& endpoint) = 0;
 
     /**
      * Called when a new node leave the cluster (decommission or removeToken).
      *
      * @param endpoint the endpoint that is leaving.
      */
-    virtual void on_leave_cluster(const gms::inet_address& endpoint) = 0;
+    virtual future<> on_leave_cluster(const gms::inet_address& endpoint) = 0;
 
     /**
      * Called when a node is marked UP.
      *
      * @param endpoint the endpoint marked UP.
      */
-    virtual void on_up(const gms::inet_address& endpoint) = 0;
+    virtual future<> on_up(const gms::inet_address& endpoint) = 0;
 
     /**
      * Called when a node is marked DOWN.
      *
      * @param endpoint the endpoint marked DOWN.
      */
-    virtual void on_down(const gms::inet_address& endpoint) = 0;
+    virtual future<> on_down(const gms::inet_address& endpoint) = 0;
 };
 
 }

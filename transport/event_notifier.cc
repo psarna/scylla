@@ -237,7 +237,7 @@ void cql_server::event_notifier::on_drop_aggregate(const sstring& ks_name, const
     elogger.warn("%s event ignored", __func__);
 }
 
-void cql_server::event_notifier::on_join_cluster(const gms::inet_address& endpoint)
+future<> cql_server::event_notifier::on_join_cluster(const gms::inet_address& endpoint)
 {
     for (auto&& conn : _topology_change_listeners) {
         using namespace cql_transport;
@@ -245,9 +245,10 @@ void cql_server::event_notifier::on_join_cluster(const gms::inet_address& endpoi
             conn->write_response(conn->make_topology_change_event(event::topology_change::new_node(endpoint, conn->_server_addr.port)));
         };
     }
+    return make_ready_future<>();
 }
 
-void cql_server::event_notifier::on_leave_cluster(const gms::inet_address& endpoint)
+future<> cql_server::event_notifier::on_leave_cluster(const gms::inet_address& endpoint)
 {
     for (auto&& conn : _topology_change_listeners) {
         using namespace cql_transport;
@@ -255,9 +256,10 @@ void cql_server::event_notifier::on_leave_cluster(const gms::inet_address& endpo
             conn->write_response(conn->make_topology_change_event(event::topology_change::removed_node(endpoint, conn->_server_addr.port)));
         };
     }
+    return make_ready_future<>();
 }
 
-void cql_server::event_notifier::on_up(const gms::inet_address& endpoint)
+future<> cql_server::event_notifier::on_up(const gms::inet_address& endpoint)
 {
     bool was_up = _last_status_change.count(endpoint) && _last_status_change.at(endpoint) == event::status_change::status_type::UP;
     _last_status_change[endpoint] = event::status_change::status_type::UP;
@@ -269,9 +271,10 @@ void cql_server::event_notifier::on_up(const gms::inet_address& endpoint)
             };
         }
     }
+    return make_ready_future<>();
 }
 
-void cql_server::event_notifier::on_down(const gms::inet_address& endpoint)
+future<> cql_server::event_notifier::on_down(const gms::inet_address& endpoint)
 {
     bool was_down = _last_status_change.count(endpoint) && _last_status_change.at(endpoint) == event::status_change::status_type::DOWN;
     _last_status_change[endpoint] = event::status_change::status_type::DOWN;
@@ -283,6 +286,7 @@ void cql_server::event_notifier::on_down(const gms::inet_address& endpoint)
             };
         }
     }
+    return make_ready_future<>();
 }
 
 }

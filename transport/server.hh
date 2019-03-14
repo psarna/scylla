@@ -286,10 +286,10 @@ public:
     virtual void on_drop_function(const sstring& ks_name, const sstring& function_name) override;
     virtual void on_drop_aggregate(const sstring& ks_name, const sstring& aggregate_name) override;
 
-    virtual void on_join_cluster(const gms::inet_address& endpoint) override;
-    virtual void on_leave_cluster(const gms::inet_address& endpoint) override;
-    virtual void on_up(const gms::inet_address& endpoint) override;
-    virtual void on_down(const gms::inet_address& endpoint) override;
+    virtual future<> on_join_cluster(const gms::inet_address& endpoint) override;
+    virtual future<> on_leave_cluster(const gms::inet_address& endpoint) override;
+    virtual future<> on_up(const gms::inet_address& endpoint) override;
+    virtual future<> on_down(const gms::inet_address& endpoint) override;
 };
 
 using response_type = cql_server::response_type;
