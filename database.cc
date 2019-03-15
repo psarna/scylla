@@ -89,6 +89,8 @@
 #include "user_types_metadata.hh"
 #include <seastar/core/shared_ptr_incomplete.hh>
 
+#include "schema_builder.hh"
+
 using namespace std::chrono_literals;
 
 logging::logger dblog("database");
@@ -563,6 +565,28 @@ do_parse_schema_tables(distributed<service::storage_proxy>& proxy, const sstring
     });
 }
 
+static future<> maybe_fix_secondary_index_mv_schema(database& db, view_ptr v) {
+    if (v->clustering_key_size() == 0) {
+        return make_ready_future<>();
+    }
+    const column_definition& first_view_ck = v->clustering_key_columns().front();
+    if (first_view_ck.is_computed()) {
+        return make_ready_future<>();
+    }
+
+    table& base = db.find_column_family(v->view_info()->base_id());
+    schema_ptr base_schema = base.schema();
+    // If the first clustering key part of a view is a column with name not found in base schema,
+    // it implies it might be backing an index created before computed columns were introduced,
+    // and as such it must be recreated properly.
+    if (base_schema->columns_by_name().count(first_view_ck.name()) == 0) {
+        schema_builder builder{schema_ptr(v)};
+        builder.mark_column_computed(first_view_ck.name());
+        return service::get_local_migration_manager().announce_view_update(view_ptr(builder.build()), true);
+    }
+    return make_ready_future<>();
+}
+
 future<> database::parse_system_tables(distributed<service::storage_proxy>& proxy) {
     using namespace db::schema_tables;
     return do_parse_schema_tables(proxy, db::schema_tables::KEYSPACES, [this] (schema_result_value_type &v) {
@@ -589,7 +613,9 @@ future<> database::parse_system_tables(distributed<service::storage_proxy>& prox
         return do_parse_schema_tables(proxy, db::schema_tables::VIEWS, [this, &proxy] (schema_result_value_type &v) {
             return create_views_from_schema_partition(proxy, v.second).then([this] (std::vector<view_ptr> views) {
                 return parallel_for_each(views.begin(), views.end(), [this] (auto&& v) {
-                    return this->add_column_family_and_make_directory(v);
+                    return this->add_column_family_and_make_directory(v).then([this, v] {
+                        return maybe_fix_secondary_index_mv_schema(*this, v);
+                    });
                 });
             });
         });
