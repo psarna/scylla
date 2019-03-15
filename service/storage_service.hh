@@ -301,6 +301,7 @@ private:
     gms::feature _mc_sstable_feature;
     gms::feature _row_level_repair_feature;
     gms::feature _truncation_table;
+    gms::feature _computed_columns_feature;
 public:
     void enable_all_features();
 
@@ -2296,6 +2297,10 @@ public:
     }
     const gms::feature& cluster_supports_truncation_table() const {
         return _truncation_table;
+    }
+
+    bool cluster_supports_computed_columns() const {
+        return bool(_computed_columns_feature);
     }
 private:
     future<> set_cql_ready(bool ready);
