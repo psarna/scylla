@@ -778,6 +778,14 @@ schema_builder& schema_builder::alter_column_type(bytes name, data_type new_type
     return *this;
 }
 
+schema_builder& schema_builder::mark_column_computed(bytes name, column_computation computation) {
+    auto it = boost::find_if(_raw._columns, [&name] (auto& c) { return c.name() == name; });
+    assert(it != _raw._columns.end());
+    it->set_computed(std::move(computation));
+
+    return *this;
+}
+
 schema_builder& schema_builder::with_collection(bytes name, data_type type)
 {
     _raw._collections.emplace(name, type);
