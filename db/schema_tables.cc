@@ -2720,6 +2720,28 @@ const std::vector<sstring>& all_table_names() {
     return all;
 }
 
+future<> maybe_fix_secondary_index_mv_schema(database& db, view_ptr v) {
+    if (v->clustering_key_size() == 0) {
+        return make_ready_future<>();
+    }
+    const column_definition& first_view_ck = v->clustering_key_columns().front();
+    if (first_view_ck.is_computed()) {
+        return make_ready_future<>();
+    }
+
+    table& base = db.find_column_family(v->view_info()->base_id());
+    schema_ptr base_schema = base.schema();
+    // If the first clustering key part of a view is a column with name not found in base schema,
+    // it implies it might be backing an index created before computed columns were introduced,
+    // and as such it must be recreated properly.
+    if (base_schema->columns_by_name().count(first_view_ck.name()) == 0) {
+        schema_builder builder{schema_ptr(v)};
+        builder.mark_column_computed(first_view_ck.name(), std::make_unique<token_column_computation>());
+        return service::get_local_migration_manager().announce_view_update(view_ptr(builder.build()), true);
+    }
+    return make_ready_future<>();
+}
+
 namespace legacy {
 
 table_schema_version schema_mutations::digest() const {
