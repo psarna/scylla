@@ -108,6 +108,7 @@ static const sstring MC_SSTABLE_FEATURE = "MC_SSTABLE_FORMAT";
 static const sstring ROW_LEVEL_REPAIR = "ROW_LEVEL_REPAIR";
 static const sstring TRUNCATION_TABLE = "TRUNCATION_TABLE";
 static const sstring CORRECT_STATIC_COMPACT_IN_MC = "CORRECT_STATIC_COMPACT_IN_MC";
+static const sstring COMPUTED_COLUMNS_FEATURE = "COMPUTED_COLUMNS";
 
 distributed<storage_service> _the_storage_service;
 
@@ -156,6 +157,7 @@ storage_service::storage_service(distributed<database>& db, gms::gossiper& gossi
         , _row_level_repair_feature(_feature_service, ROW_LEVEL_REPAIR)
         , _truncation_table(_feature_service, TRUNCATION_TABLE)
         , _correct_static_compact_in_mc(_feature_service, CORRECT_STATIC_COMPACT_IN_MC)
+        , _computed_columns_feature(_feature_service, COMPUTED_COLUMNS_FEATURE)
         , _replicate_action([this] { return do_replicate_to_all_cores(); })
         , _update_pending_ranges_action([this] { return do_update_pending_ranges(); })
         , _sys_dist_ks(sys_dist_ks)
@@ -189,6 +191,7 @@ void storage_service::enable_all_features() {
         std::ref(_row_level_repair_feature),
         std::ref(_truncation_table),
         std::ref(_correct_static_compact_in_mc),
+        std::ref(_computed_columns_feature)
     })
     {
         if (features.count(f.name())) {
@@ -278,6 +281,7 @@ std::set<sstring> storage_service::get_config_supported_features_set() {
         ROW_LEVEL_REPAIR,
         TRUNCATION_TABLE,
         CORRECT_STATIC_COMPACT_IN_MC,
+        COMPUTED_COLUMNS_FEATURE,
     };
 
     // Do not respect config in the case database is not started
