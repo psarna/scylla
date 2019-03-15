@@ -321,6 +321,7 @@ private:
     gms::feature _truncation_table;
     gms::feature _correct_static_compact_in_mc;
     gms::feature _unbounded_range_tombstones_feature;
+    gms::feature _computed_columns_feature;
 
     sstables::sstable_version_types _sstables_format = sstables::sstable_version_types::ka;
     seastar::semaphore _feature_listeners_sem = {1};
@@ -2333,6 +2334,10 @@ public:
     bool cluster_supports_unbounded_range_tombstones() const {
         return bool(_unbounded_range_tombstones_feature);
     }
+    bool cluster_supports_computed_columns() const {
+        return bool(_computed_columns_feature);
+    }
+
 private:
     future<> set_cql_ready(bool ready);
 private:
