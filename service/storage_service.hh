@@ -302,6 +302,7 @@ private:
     gms::feature _row_level_repair_feature;
     gms::feature _truncation_table;
     gms::feature _correct_static_compact_in_mc;
+    gms::feature _computed_columns_feature;
 public:
     void enable_all_features();
 
@@ -2300,6 +2301,10 @@ public:
     }
     const gms::feature& cluster_supports_correct_static_compact_in_mc() const {
         return _correct_static_compact_in_mc;
+    }
+
+    bool cluster_supports_computed_columns() const {
+        return bool(_computed_columns_feature);
     }
 private:
     future<> set_cql_ready(bool ready);
