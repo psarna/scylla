@@ -94,6 +94,7 @@ static constexpr auto FUNCTIONS = "functions";
 static constexpr auto AGGREGATES = "aggregates";
 static constexpr auto INDEXES = "indexes";
 static constexpr auto VIEW_VIRTUAL_COLUMNS = "view_virtual_columns"; // Scylla specific
+static constexpr auto COMPUTED_COLUMNS = "computed_columns"; // Scylla specific
 
 schema_ptr columns();
 schema_ptr view_virtual_columns();
@@ -102,6 +103,7 @@ schema_ptr indexes();
 schema_ptr tables();
 schema_ptr scylla_tables();
 schema_ptr views();
+schema_ptr computed_columns();
 
 }
 
