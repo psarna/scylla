@@ -48,6 +48,8 @@
 #include "schema_builder.hh"
 #include "database.hh"
 
+#include "service/storage_service.hh"
+
 #include <boost/range/adaptor/map.hpp>
 #include <boost/algorithm/cxx11/any_of.hpp>
 
