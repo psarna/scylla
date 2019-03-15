@@ -26,11 +26,12 @@
 namespace db {
 
 enum class schema_feature {
-    VIEW_VIRTUAL_COLUMNS
+    VIEW_VIRTUAL_COLUMNS,
+    COMPUTED_COLUMNS,
 };
 
 using schema_features = enum_set<super_enum<schema_feature,
-    schema_feature::VIEW_VIRTUAL_COLUMNS
+    schema_feature::VIEW_VIRTUAL_COLUMNS, schema_feature::COMPUTED_COLUMNS
     >>;
 
 }
