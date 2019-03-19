@@ -56,6 +56,7 @@ namespace statements {
 class index_prop_defs : public property_definitions {
 public:
     static constexpr auto KW_OPTIONS = "options";
+    static constexpr auto LOCAL_INDEX_CLASS = "com.scylladb.LocalIndex";
 
     bool is_custom = false;
     std::optional<sstring> custom_class;
