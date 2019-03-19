@@ -220,6 +220,12 @@ void create_index_statement::validate_targets_for_multi_column_index(std::vector
     if (!_properties->is_custom) {
         throw exceptions::invalid_request_exception("Only CUSTOM indexes support multiple columns");
     }
+    const auto& options = _properties->get_options();
+    auto options_it = options.find(index_target::custom_index_option_name);
+    if (options_it != options.end() && options_it->second == index_prop_defs::LOCAL_INDEX_CLASS) {
+        throw exceptions::invalid_request_exception(format("Class {} does not support multiple columns", index_prop_defs::LOCAL_INDEX_CLASS));
+    }
+
     std::unordered_set<::shared_ptr<column_identifier>> columns;
     for (auto& target : targets) {
         if (columns.count(target->column) > 0) {
