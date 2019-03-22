@@ -1253,7 +1253,19 @@ raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool includ
 { }
 
 column_computation_ptr column_computation::deserialize(bytes raw) {
+    if (raw == bytes("token")) {
+        return std::make_unique<token_column_computation>();
+    }
     throw std::runtime_error("Incorrect column computation value");
+}
+
+bytes token_column_computation::serialize() const {
+    return bytes("token");
+}
+
+bytes token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
+    dht::i_partitioner& partitioner = dht::global_partitioner();
+    return partitioner.token_to_bytes(partitioner.get_token(schema, key));
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
