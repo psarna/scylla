@@ -23,6 +23,10 @@
 
 #include "bytes.hh"
 
+class schema;
+class partition_key;
+class clustering_row;
+
 struct column_computed_info {
     enum computation_type {
         token
@@ -31,4 +35,6 @@ struct column_computed_info {
     static column_computed_info deserialize(bytes raw);
 
     bytes serialize() const;
+
+    bytes compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const;
 };

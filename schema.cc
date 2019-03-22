@@ -1269,6 +1269,21 @@ bytes column_computed_info::serialize() const {
     }
 }
 
+static bytes compute_token_column_value(const schema& base_schema, const partition_key& base_key, const clustering_row& base_row) {
+    dht::i_partitioner& partitioner = dht::global_partitioner();
+    return partitioner.token_to_bytes(partitioner.get_token(base_schema, base_key));
+}
+
+bytes column_computed_info::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
+    switch (type) {
+    case token:
+        return compute_token_column_value(schema, key, row);
+    default:
+        assert(!"Incorrect computation type for computed info");
+        return bytes();
+    }
+}
+
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
     return x._base_id == y._base_id
         && x._base_name == y._base_name
