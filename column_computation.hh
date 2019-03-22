@@ -23,6 +23,10 @@
 
 #include "bytes.hh"
 
+class schema;
+class partition_key;
+class clustering_row;
+
 class column_computation;
 using column_computation_ptr = std::unique_ptr<column_computation>;
 
@@ -35,4 +39,14 @@ public:
     virtual column_computation_ptr clone() const = 0;
 
     virtual bytes serialize() const = 0;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const = 0;
+};
+
+class token_column_computation : public column_computation {
+public:
+    virtual column_computation_ptr clone() const override {
+        return std::make_unique<token_column_computation>(*this);
+    }
+    virtual bytes serialize() const override;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
 };
