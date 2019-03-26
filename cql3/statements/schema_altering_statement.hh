@@ -93,6 +93,8 @@ protected:
 
     virtual future<::shared_ptr<messages::result_message>>
     execute(service::storage_proxy& proxy, service::query_state& state, const query_options& options) override;
+
+    void validate_schema_changes_allowed() const;
 };
 
 }
