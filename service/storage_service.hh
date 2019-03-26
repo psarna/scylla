@@ -2303,6 +2303,8 @@ public:
     const gms::feature& cluster_supports_correct_static_compact_in_mc() const {
         return _correct_static_compact_in_mc;
     }
+
+    bool cluster_has_mixed_versions() const;
 private:
     future<> set_cql_ready(bool ready);
 private:

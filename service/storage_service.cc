@@ -79,6 +79,7 @@
 #include "distributed_loader.hh"
 #include "database.hh"
 #include <seastar/core/metrics.hh>
+#include <boost/algorithm/cxx11/all_of.hpp>
 
 using token = dht::token;
 using UUID = utils::UUID;
@@ -3312,6 +3313,14 @@ future<> init_storage_service(distributed<database>& db, sharded<gms::gossiper>&
 
 future<> deinit_storage_service() {
     return service::get_storage_service().stop();
+}
+
+bool storage_service::cluster_has_mixed_versions() const {
+    sstring current = version::release();
+    return !boost::algorithm::all_of_equal(gms::get_local_gossiper().get_endpoint_states() | boost::adaptors::map_values | boost::adaptors::transformed([] (const gms::endpoint_state& ep_state) {
+        const versioned_value* v = ep_state.get_application_state_ptr(gms::application_state::RELEASE_VERSION);
+        return v ? v->value : sstring();
+    }), current);
 }
 
 future<> storage_service::set_cql_ready(bool ready) {
