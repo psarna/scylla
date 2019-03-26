@@ -42,6 +42,9 @@
 #include "cql3/statements/schema_altering_statement.hh"
 
 #include "transport/messages/result_message.hh"
+#include "service/storage_service.hh"
+
+bool is_internal_keyspace(const sstring& keyspace);
 
 namespace cql3 {
 
@@ -59,6 +62,12 @@ schema_altering_statement::schema_altering_statement(::shared_ptr<cf_name> name,
     , cql_statement_no_metadata(timeout_selector)
     , _is_column_family_level{true}
 {
+    if (!is_internal_keyspace(keyspace())) {
+        if (!service::get_local_storage_service().allow_schema_changes()) {
+            throw exceptions::invalid_request_exception("Schema altering statements are not allowed in a cluster with mixed versions. "
+                    "Allow them explicitly by setting the config value: allow_changing_schema_with_mixed_versions: true");
+        }
+    }
 }
 
 future<> schema_altering_statement::grant_permissions_to_creator(const service::client_state&) {
