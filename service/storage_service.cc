@@ -3323,6 +3323,13 @@ bool storage_service::cluster_has_mixed_versions() const {
     }), current);
 }
 
+bool storage_service::schema_changes_allowed() const {
+    if (_db.local().get_config().allow_changing_schema_with_mixed_versions()) {
+        return true;
+    }
+    return !cluster_has_mixed_versions();
+}
+
 future<> storage_service::set_cql_ready(bool ready) {
     return _gossiper.add_local_application_state(application_state::RPC_READY, value_factory.cql_ready(ready));
 }
