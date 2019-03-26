@@ -2305,6 +2305,7 @@ public:
     }
 
     bool cluster_has_mixed_versions() const;
+    bool schema_changes_allowed() const;
 private:
     future<> set_cql_ready(bool ready);
 private:
