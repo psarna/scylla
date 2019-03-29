@@ -276,8 +276,12 @@ void create_index_statement::validate_targets_for_multi_column_index(std::vector
 
 future<::shared_ptr<cql_transport::event::schema_change>>
 create_index_statement::announce_migration(service::storage_proxy& proxy, bool is_local_only) {
-    if (!service::get_local_storage_service().cluster_supports_indexes()) {
+    const service::storage_service& ss = service::get_local_storage_service();
+    if (!ss.cluster_supports_indexes()) {
         throw exceptions::invalid_request_exception("Index support is not enabled");
+    }
+    if (!ss.cluster_supports_computed_columns()) {
+        throw exceptions::invalid_request_exception("All nodes must support computed columns in order to create a secondary index");
     }
     auto& db = proxy.get_db().local();
     auto schema = db.find_schema(keyspace(), column_family());
