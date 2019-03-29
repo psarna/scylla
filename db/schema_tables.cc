@@ -109,7 +109,8 @@ namespace schema_tables {
 
 logging::logger slogger("schema_tables");
 
-const sstring version = "3";
+// NOTICE(sarna): Last change was due to introducing computed columns
+const sstring version = "4";
 
 struct push_back_and_return {
     std::vector<mutation> muts;
