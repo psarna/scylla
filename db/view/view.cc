@@ -296,7 +296,7 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
             if (!cdef.is_computed()) {
                 throw std::logic_error(format("Column {} doesn't exist in base and it's not a computed column", cdef.name_as_text()));
             }
-            return linearized_values.emplace_back(cdef.get_computation().compute_value(*_base, base_key, update));
+            return linearized_values.emplace_back(cdef.get_computation().compute_value(*_base, base_key, update).value());
         }
         switch (base_col->kind) {
         case column_kind::partition_key:
