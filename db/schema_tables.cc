@@ -2367,7 +2367,7 @@ static index_metadata create_index_from_index_row(const query::result_set_row& r
 /*
  * View metadata serialization/deserialization.
  */
-
+static logging::logger srn("SARNAschematab");
 view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm, std::optional<table_schema_version> version)  {
     auto table_rs = query::result_set(sm.columnfamilies_mutation());
     query::result_set_row row = table_rs.row(0);
@@ -2379,7 +2379,9 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     schema_builder builder{ks_name, cf_name, id};
     prepare_builder_from_table_row(ctxt, builder, row);
 
+    srn.warn("GETTING COMPUTED COLUMNS");
     auto computed_columns = get_computed_columns(sm);
+    srn.warn("GOT COMPUTED COLUMNS");
     auto column_defs = create_columns_from_column_rows(query::result_set(sm.columns_mutation()), ks_name, cf_name, false, column_view_virtual::no, computed_columns);
     for (auto&& cdef : column_defs) {
         builder.with_column(cdef);
@@ -2403,6 +2405,7 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     auto where_clause = row.get_nonnull<sstring>("where_clause");
 
     builder.with_view_info(std::move(base_id), std::move(base_name), include_all_columns, std::move(where_clause));
+    srn.warn("CREATED VIEW FROM MUTATIONS");
     return view_ptr(builder.build());
 }
 

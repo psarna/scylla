@@ -52,7 +52,7 @@
 #include "schema_builder.hh"
 #include "database.hh"
 #include "types/user.hh"
-
+static logging::logger srn("SARNAmman");
 namespace service {
 
 static logging::logger mlogger("migration_manager");
@@ -565,6 +565,7 @@ future<> migration_manager::announce_column_family_update(schema_ptr cfm, bool f
         auto&& keyspace = db.find_keyspace(cfm->ks_name()).metadata();
         return db::schema_tables::make_update_table_mutations(keyspace, old_schema, cfm, ts, from_thrift)
             .then([announce_locally, keyspace, ts, view_updates = std::move(view_updates)] (auto&& mutations) {
+            srn.warn("STEP 1 OF MIGRATION");
                 return map_reduce(view_updates,
                     [keyspace = std::move(keyspace), ts] (auto&& view) {
                         auto& old_view = keyspace->cf_meta_data().at(view->cf_name());
@@ -572,10 +573,12 @@ future<> migration_manager::announce_column_family_update(schema_ptr cfm, bool f
                         return db::schema_tables::make_update_view_mutations(keyspace, view_ptr(old_view), std::move(view), ts, false);
                     }, std::move(mutations),
                     [] (auto&& result, auto&& view_mutations) {
+                        srn.warn("STEP 2 OF MIGRATION");
                         std::move(view_mutations.begin(), view_mutations.end(), std::back_inserter(result));
                         return std::move(result);
                     })
                 .then([announce_locally] (auto&& mutations) {
+                    srn.warn("STEP 3 OF MIGRATION");
                     return announce(std::move(mutations), announce_locally);
                 });
             });
@@ -841,6 +844,7 @@ future<> migration_manager::announce(std::vector<mutation> schema) {
 
     return do_with(std::move(schema), [live_members = gms::get_local_gossiper().get_live_members()](auto && schema) {
         return parallel_for_each(live_members.begin(), live_members.end(), [&schema](auto& endpoint) {
+            srn.warn("STEP 4 OF MIGRATION");
             // only push schema to nodes with known and equal versions
             if (endpoint != utils::fb_utilities::get_broadcast_address() &&
                 netw::get_local_messaging_service().knows_version(endpoint) &&
@@ -851,7 +855,7 @@ future<> migration_manager::announce(std::vector<mutation> schema) {
                 return make_ready_future<>();
             }
         });
-    }).then([f = std::move(f)] () mutable { return std::move(f); });
+    }).then([f = std::move(f)] () mutable { srn.warn("STEP 5 OF MIGRATION");return std::move(f); });
 }
 
 /**

@@ -273,7 +273,7 @@ void create_index_statement::validate_targets_for_multi_column_index(std::vector
         columns.emplace(target->as_string());
     }
 }
-
+static logging::logger srn("SARNAcrin");
 future<::shared_ptr<cql_transport::event::schema_change>>
 create_index_statement::announce_migration(service::storage_proxy& proxy, bool is_local_only) {
     const service::storage_service& ss = service::get_local_storage_service();
@@ -322,6 +322,7 @@ create_index_statement::announce_migration(service::storage_proxy& proxy, bool i
     builder.with_index(index);
     return service::get_local_migration_manager().announce_column_family_update(
             builder.build(), false, {}, is_local_only).then([this]() {
+        srn.warn("FINISHED MIGRATION");
         using namespace cql_transport;
         return make_shared<event::schema_change>(
                 event::schema_change::change_type::UPDATED,
@@ -346,6 +347,7 @@ index_metadata create_index_statement::make_index_metadata(schema_ptr schema,
     index_options_map new_options = options;
     auto target_option = secondary_index::target_parser::serialize_targets(targets);
     new_options.emplace(index_target::target_option_name, target_option);
+    srn.warn("SERIALIZING TARGETS: {}", target_option);
 
     const auto& first_target = targets.front()->value;
     return index_metadata{name, new_options, kind, index_metadata::is_local_index(std::holds_alternative<index_target::multiple_columns>(first_target))};

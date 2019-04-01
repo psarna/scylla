@@ -52,6 +52,7 @@ struct target_parser {
         std::vector<const column_definition*> pk_columns;
         std::vector<const column_definition*> ck_columns;
         cql3::statements::index_target::target_type type;
+        std::vector<column_definition> columns_placeholder;
     };
 
     static target_info parse(schema_ptr schema, const index_metadata& im);

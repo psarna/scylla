@@ -831,6 +831,7 @@ indexIdent returns [::shared_ptr<index_target::raw> id]
     | K_ENTRIES '(' c=cident ')' { $id = index_target::raw::keys_and_values_of(c); }
     | K_FULL '(' c=cident ')'    { $id = index_target::raw::full_collection(c); }
     | '(' c1=cident { columns.push_back(c1); } ( ',' cn=cident { columns.push_back(cn); } )* ')' { $id = index_target::raw::columns(std::move(columns)); }
+    | c=cident '[' v=constant ']'  { $id = index_target::raw::map_value(c, v); }
 
     ;
 

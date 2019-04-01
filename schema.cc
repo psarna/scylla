@@ -35,6 +35,7 @@
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
 #include "types/map.hh"
+#include "json.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -95,7 +96,7 @@ std::ostream& operator<<(std::ostream& out, const column_mapping& cm) {
 }
 
 ::shared_ptr<cql3::column_specification>
-schema::make_column_specification(const column_definition& def) {
+schema::make_column_specification(const column_definition& def) const {
     auto id = ::make_shared<cql3::column_identifier>(def.name(), column_name_type(def));
     return ::make_shared<cql3::column_specification>(_raw._ks_name, _raw._cf_name, std::move(id), def.type);
 }
@@ -634,6 +635,10 @@ column_definition::name_as_text() const {
 const bytes&
 column_definition::name() const {
     return _name;
+}
+
+void column_definition::init_column_specification(const schema& s) {
+    column_specification = s.make_column_specification(*this);
 }
 
 sstring column_definition::name_as_cql_string() const {
@@ -1261,15 +1266,36 @@ raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool includ
         , _where_clause(where_clause)
 { }
 
-column_computation_ptr column_computation::deserialize(bytes raw) {
-    if (raw == bytes("token")) {
-        return std::make_unique<token_column_computation>();
+column_computation_ptr column_computation::deserialize(bytes_view raw) {
+    return deserialize(json::to_json_value(sstring(raw.begin(), raw.end())));
+}
+
+column_computation_ptr column_computation::deserialize(const Json::Value& parsed) {
+    if (!parsed.isObject()) {
+        throw std::runtime_error(format("Invalid column computation value: {}", parsed.toStyledString()));
     }
-    throw std::runtime_error("Incorrect column computation value");
+    Json::Value type_json = parsed.get("type", Json::Value());
+    if (!type_json.isString()) {
+        throw std::runtime_error(format("Type {} is not convertible to string", type_json.toStyledString()));
+    }
+    sstring type = type_json.asString();
+    static logging::logger srn("SARNASCH");
+    srn.warn("deserializing {} {}", type, parsed);
+    if (type == "token") {
+        return std::make_unique<token_column_computation>();
+    } else if (type == "map_value") {
+        bytes map_name = to_bytes(parsed.get("map", Json::Value()).asString());
+        bytes map_key = to_bytes(parsed.get("key", Json::Value()).asString());
+        return std::make_unique<map_value_column_computation>(map_name, map_key);
+    }
+    //FIXME(sarna): deserialize map_value
+    throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", type, parsed.toStyledString()));
 }
 
 bytes token_column_computation::serialize() const {
-    return bytes("token");
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("token");
+    return to_bytes(json::to_sstring(serialized));
 }
 
 bytes_opt token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
@@ -1277,21 +1303,39 @@ bytes_opt token_column_computation::compute_value(const schema& schema, const pa
     return partitioner.token_to_bytes(partitioner.get_token(schema, key));
 }
 
-bytes map_value_column_computation::serialize() const { // FIXME(sarna): serialize properly with sizes
-    return bytes("map_value") + _map_column.name() + _key.serialize();
+Json::Value map_value_column_computation::to_json() const {
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("map_value");
+    serialized["map"] = Json::Value(sstring(_map_name.begin(), _map_name.end()));
+    serialized["key"] = Json::Value(sstring(_key.begin(), _key.end()));
+    return serialized;
+}
+
+bytes map_value_column_computation::serialize() const {
+    return to_bytes(json::to_sstring(to_json()));
 }
 
 bytes_opt map_value_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
-    collection_mutation_view collection_view = row.cells().cell_at(_map_column.id).as_collection_mutation();
-    auto map_t = static_pointer_cast<const map_type_impl>(_map_column.type);
-    return collection_view.data.with_linearized([&] (bytes_view c_bv) {
+    const column_definition* map_column = schema.get_column_definition(_map_name);
+    assert(map_column);
+    collection_mutation_view collection_view = row.cells().cell_at(map_column->id).as_collection_mutation();
+    auto map_t = static_pointer_cast<const map_type_impl>(map_column->type);
+    auto collection_t = dynamic_pointer_cast<const collection_type_impl>(map_column->type);
+    assert(collection_t);
+    auto key_value = map_t->get_values_type()->deserialize(_key);
+    /*return collection_view.data.with_linearized([&] (bytes_view c_bv) {
         map_type_impl::native_type map_v = value_cast<map_type_impl::native_type>(map_t->deserialize(c_bv));
         auto it = boost::find_if(map_v, [&](const map_type_impl::native_type::value_type& element) {
-            return element.first == _key;
+            return element.first == key_value;
         });
         return it != map_v.end() ? bytes_opt(it->second.serialize()) : bytes_opt{};
+    });*/
+    auto map_raw = collection_t->to_value(collection_view, cql_serialization_format::internal());
+    map_type_impl::native_type map_v = value_cast<map_type_impl::native_type>(map_t->deserialize(map_raw));
+    auto it = boost::find_if(map_v, [&](const map_type_impl::native_type::value_type& element) {
+        return element.first == key_value;
     });
-
+    return it != map_v.end() ? bytes_opt(it->second.serialize()) : bytes_opt{};
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {

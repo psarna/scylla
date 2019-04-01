@@ -298,6 +298,7 @@ public:
         return _computation ? _computation->clone() : nullptr;
     }
     void set_computed(column_computation_ptr computation) { _computation = std::move(computation); }
+    void init_column_specification(const schema& s);
     // Columns hidden from CQL cannot be in any way retrieved by the user,
     // either explicitly or via the '*' operator, or functions, aggregates, etc.
     bool is_hidden_from_cql() const { return is_view_virtual(); }
@@ -605,8 +606,9 @@ public:
         bytes name;
         data_type type;
     };
+
+    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def) const;
 private:
-    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:

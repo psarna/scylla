@@ -43,6 +43,7 @@
 #include "index_target.hh"
 #include "index/secondary_index.hh"
 #include <boost/algorithm/string/join.hpp>
+#include "types/map.hh"
 
 namespace cql3 {
 
@@ -64,6 +65,10 @@ sstring index_target::as_string() const {
 
         sstring operator()(const ::shared_ptr<column_identifier>& column) const {
             return column->to_string();
+        }
+
+        sstring operator()(const map_entry& entry) const {
+            return entry.first->to_string() + "_at_" + entry.second->to_string();
         }
     };
 
@@ -118,6 +123,11 @@ index_target::raw::columns(std::vector<::shared_ptr<column_identifier::raw>> c) 
     return ::make_shared<raw>(std::move(c), target_type::values);
 }
 
+::shared_ptr<index_target::raw>
+index_target::raw::map_value(::shared_ptr<column_identifier::raw> c, ::shared_ptr<constants::literal> v) {
+    return ::make_shared<raw>(std::make_pair(std::move(c), std::move(v)), target_type::values);
+}
+
 ::shared_ptr<index_target>
 index_target::raw::prepare(schema_ptr schema) {
     struct prepare_visitor {
@@ -135,6 +145,20 @@ index_target::raw::prepare(schema_ptr schema) {
 
         ::shared_ptr<index_target> operator()(::shared_ptr<column_identifier::raw> raw_ident) const {
             return ::make_shared<index_target>(raw_ident->prepare_column_identifier(_schema), _type);
+        }
+
+        ::shared_ptr<index_target> operator()(const map_entry& raw_entry) const {
+            auto ident = raw_entry.first->prepare_column_identifier(_schema);
+            const column_definition* map_column = _schema->get_column_definition(ident->name());
+            assert(map_column);
+            assert(map_column->is_multi_cell());
+            static logging::logger srn("SARNAind");
+            srn.warn("TYPEIS {}", map_column->type->cql3_type_name());
+            auto collection_type = dynamic_pointer_cast<const map_type_impl>(map_column->type);
+            assert(collection_type);
+            data_type value_type = collection_type->get_values_type();
+            auto value_term = dynamic_pointer_cast<constants::value>(raw_entry.second->prepare_as(value_type));
+            return ::make_shared<index_target>(std::make_pair(std::move(ident), std::move(value_term)), _type);
         }
     };
 

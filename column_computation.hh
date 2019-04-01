@@ -34,7 +34,8 @@ class column_computation {
 public:
     virtual ~column_computation() {}
 
-    static column_computation_ptr deserialize(bytes raw);
+    static column_computation_ptr deserialize(bytes_view raw);
+    static column_computation_ptr deserialize(const Json::Value& json);
 
     virtual column_computation_ptr clone() const = 0;
 
@@ -52,14 +53,21 @@ public:
 };
 
 class map_value_column_computation : public column_computation {
-    const column_definition& _map_column;
-    data_value _key;
+
+    //fixme(sarna): cache these maybe?
+    //const column_definition& _map_column;
+    //data_value _key;
+    bytes _map_name;
+    bytes _key;
 public:
-    map_value_column_computation(const column_definition& map_column, data_value key) : _map_column(map_column), _key(key) { }
+    //map_value_column_computation(const column_definition& map_column, data_value key) : _map_column(map_column), _key(key) { }
+    map_value_column_computation(bytes map_name, bytes key) : _map_name(map_name), _key(key) { }
 
     virtual column_computation_ptr clone() const override {
         return std::make_unique<map_value_column_computation>(*this);
     }
     virtual bytes serialize() const override;
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+
+    Json::Value to_json() const;
 };

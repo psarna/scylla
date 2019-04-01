@@ -187,6 +187,11 @@ static bool is_partition_key_empty(
         // are then allowed to be empty.
         return false;
     }
+    // Computed columns will for sure not be found in base schema.
+    // TODO(sarna): Avoid computing the value more than once.
+    if (view_schema.partition_key_columns().front().is_computed()) {
+        return !bool(view_schema.partition_key_columns().front().get_computation().compute_value(base, base_key, update));
+    }
     auto* base_col = base.get_column_definition(view_schema.partition_key_columns().front().name());
     switch (base_col->kind) {
     case column_kind::partition_key:
