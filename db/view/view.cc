@@ -311,7 +311,11 @@ deletable_row& view_updates::get_view_row(const partition_key& base_key, const c
                 auto& partitioner = dht::global_partitioner();
                 return linearized_values.emplace_back(partitioner.token_to_bytes(token_for(base_key)));
             }
-            return linearized_values.emplace_back(cdef.get_computation().compute_value(*_base, base_key, update));
+            bytes_opt computed_value = cdef.get_computation().compute_value(*_base, base_key, update);
+            if (!computed_value) {
+                throw std::logic_error(format("No value computed for primary key column {}", cdef.name()));
+            }
+            return linearized_values.emplace_back(*computed_value);
         }
         switch (base_col->kind) {
         case column_kind::partition_key:
