@@ -356,14 +356,46 @@ int statement_restrictions::score(const secondary_index::index& index) const {
     return 1;
 }
 
+                static logging::logger srn("SARNAstatr");
+static bytes_opt maybe_extract_map_key(::shared_ptr<restrictions> restriction, const column_definition& cdef) {
+    auto single_restrictions = dynamic_pointer_cast<single_column_restrictions>(restriction);
+    if (single_restrictions) {
+        auto single_restriction = single_restrictions->get_restriction(cdef);
+        if (single_restriction->is_contains()) {
+            auto contains = static_pointer_cast<single_column_restriction::contains>(single_restriction);
+            // Only if entry key matches our index entry key, we may proceed
+            if (contains->number_of_entries() > 0) {
+                auto constant = dynamic_pointer_cast<constants::value>(contains->entry_keys().front());
+                srn.warn("ENTRY IS {}", *constant->_bytes.data());
+                return *constant->_bytes.data();
+            }
+        }
+    }
+    return bytes_opt{};
+}
+
 std::pair<std::optional<secondary_index::index>, ::shared_ptr<cql3::restrictions::restrictions>> statement_restrictions::find_idx(secondary_index::secondary_index_manager& sim) const {
+    using namespace cql3::restrictions;
+
     std::optional<secondary_index::index> chosen_index;
     int chosen_index_score = 0;
-    ::shared_ptr<cql3::restrictions::restrictions> chosen_index_restrictions;
+    ::shared_ptr<restrictions> chosen_index_restrictions;
 
     for (const auto& index : sim.list_indexes()) {
-        for (::shared_ptr<cql3::restrictions::restrictions> restriction : index_restrictions()) {
+        for (::shared_ptr<restrictions> restriction : index_restrictions()) {
             for (const auto& cdef : restriction->get_column_defs()) {
+                bytes_opt map_key = maybe_extract_map_key(restriction, *cdef);
+                if (map_key) {
+                    srn.warn("DESTINATION {}", *(index.metadata().get_target_column(*_schema)));
+                    const column_definition* target_column = index.metadata().get_target_column(*_schema);
+                    if (target_column->is_computed()) {
+                        srn.warn("COMPUTATION {}", static_cast<const map_value_column_computation&>(target_column->get_computation()).key());
+                    }
+                    if (*map_key != static_cast<const map_value_column_computation&>(target_column->get_computation()).key()) {
+                        // Does not match
+                        continue;
+                    }
+                }
                 if (index.depends_on(*cdef)) {
                     if (score(index) > chosen_index_score) {
                         chosen_index = index;

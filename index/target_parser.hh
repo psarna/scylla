@@ -47,13 +47,14 @@
 
 namespace secondary_index {
 
-struct target_parser {
-    struct target_info {
-        std::vector<const column_definition*> pk_columns;
-        std::vector<const column_definition*> ck_columns;
-        cql3::statements::index_target::target_type type;
-    };
+struct target_info {
+    std::vector<const column_definition*> pk_columns;
+    std::vector<const column_definition*> ck_columns;
+    cql3::statements::index_target::target_type type;
+    std::vector<column_definition> columns_placeholder;
+};
 
+struct target_parser {
     static target_info parse(schema_ptr schema, const index_metadata& im);
 
     static target_info parse(schema_ptr schema, const sstring& target);

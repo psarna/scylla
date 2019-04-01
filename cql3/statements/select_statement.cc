@@ -895,6 +895,10 @@ dht::partition_range_vector indexed_table_select_statement::get_partition_ranges
         throw exceptions::invalid_request_exception("Indexed column not found in schema");
     }
 
+    static logging::logger srn("SARNASELECT");
+    for (auto i : _used_index_restrictions->get_column_defs()) {
+        srn.warn("SUPPORTING COLUMN {}", i->name_as_text());
+    }
     bytes_opt value = _used_index_restrictions->value_for(*cdef, options);
     if (value) {
         auto pk = partition_key::from_single_value(*_view_schema, *value);

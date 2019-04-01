@@ -416,7 +416,8 @@ public:
     }
 
     virtual std::vector<bytes_opt> values(const query_options& options) const override {
-        return bind_and_get(_values, options);
+        //FIXME(sarna): THERE MAY BE ZERO, IN WHICH CASE THIS IS ENTIRELY WRONG, RIGHT? WHAT ABOUT _entry_values?
+        return bind_and_get(!_values.empty() ? _values : _entry_values, options);
     }
 
     virtual bool is_contains() const override {
@@ -478,6 +479,10 @@ public:
 
     uint32_t number_of_entries() const {
         return _entry_keys.size();
+    }
+
+    const std::vector<::shared_ptr<term>>& entry_keys() const {
+        return _entry_keys;
     }
 
     virtual bool uses_function(const sstring& ks_name, const sstring& function_name) const override {

@@ -35,6 +35,8 @@
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
 #include "types/map.hh"
+#include "json.hh"
+#include "index/target_parser.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -95,7 +97,7 @@ std::ostream& operator<<(std::ostream& out, const column_mapping& cm) {
 }
 
 ::shared_ptr<cql3::column_specification>
-schema::make_column_specification(const column_definition& def) {
+schema::make_column_specification(const column_definition& def) const {
     auto id = ::make_shared<cql3::column_identifier>(def.name(), column_name_type(def));
     return ::make_shared<cql3::column_specification>(_raw._ks_name, _raw._cf_name, std::move(id), def.type);
 }
@@ -490,6 +492,18 @@ bool index_metadata::local() const {
     return _local;
 }
 
+const secondary_index::target_info& index_metadata::get_target_info(const schema& schema) const {
+    if (!_parsed_target) {
+        _parsed_target = ::make_shared<secondary_index::target_info>(secondary_index::target_parser::parse(schema.shared_from_this(), *this));
+    }
+    return *_parsed_target;
+}
+
+const column_definition* index_metadata::get_target_column(const schema& schema) const {
+    const auto& target_info = get_target_info(schema);
+    return local() ? target_info.ck_columns.front() : target_info.pk_columns.front();
+}
+
 sstring index_metadata::get_default_index_name(const sstring& cf_name,
                                                std::optional<sstring> root) {
     if (root) {
@@ -634,6 +648,10 @@ column_definition::name_as_text() const {
 const bytes&
 column_definition::name() const {
     return _name;
+}
+
+void column_definition::init_column_specification(const schema& s) {
+    column_specification = s.make_column_specification(*this);
 }
 
 sstring column_definition::name_as_cql_string() const {
@@ -1261,15 +1279,36 @@ raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool includ
         , _where_clause(where_clause)
 { }
 
-column_computation_ptr column_computation::deserialize(bytes raw) {
-    if (raw == bytes("token")) {
-        return std::make_unique<token_column_computation>();
+column_computation_ptr column_computation::deserialize(bytes_view raw) {
+    return deserialize(json::to_json_value(sstring(raw.begin(), raw.end())));
+}
+
+column_computation_ptr column_computation::deserialize(const Json::Value& parsed) {
+    if (!parsed.isObject()) {
+        throw std::runtime_error(format("Invalid column computation value: {}", parsed.toStyledString()));
     }
-    throw std::runtime_error("Incorrect column computation value");
+    Json::Value type_json = parsed.get("type", Json::Value());
+    if (!type_json.isString()) {
+        throw std::runtime_error(format("Type {} is not convertible to string", type_json.toStyledString()));
+    }
+    sstring type = type_json.asString();
+    static logging::logger srn("SARNASCH");
+    srn.warn("deserializing {} {}", type, parsed);
+    if (type == "token") {
+        return std::make_unique<token_column_computation>();
+    } else if (type == "map_value") {
+        bytes map_name = to_bytes(parsed.get("map", Json::Value()).asString());
+        bytes map_key = to_bytes(parsed.get("key", Json::Value()).asString());
+        return std::make_unique<map_value_column_computation>(map_name, map_key);
+    }
+    //FIXME(sarna): deserialize map_value
+    throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", type, parsed.toStyledString()));
 }
 
 bytes token_column_computation::serialize() const {
-    return bytes("token");
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("token");
+    return to_bytes(json::to_sstring(serialized));
 }
 
 bytes_opt token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
@@ -1277,21 +1316,89 @@ bytes_opt token_column_computation::compute_value(const schema& schema, const pa
     return partitioner.token_to_bytes(partitioner.get_token(schema, key));
 }
 
-bytes map_value_column_computation::serialize() const { // FIXME(sarna): serialize properly with sizes
-    return bytes("map_value") + _map_column.name() + _key.serialize();
+row_marker token_column_computation::compute_row_marker(const schema& schema, const clustering_row& row) const {
+    throw std::logic_error("Token column computation operates on partition keys and thus does not offer liveness info");
+}
+
+column_computation::const_iterator_range_type token_column_computation::dependent_columns(const schema& schema) const {
+    return schema.partition_key_columns();
+}
+
+Json::Value map_value_column_computation::to_json() const {
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("map_value");
+    serialized["map"] = Json::Value(sstring(_map_name.begin(), _map_name.end()));
+    serialized["key"] = Json::Value(sstring(_key.begin(), _key.end()));
+    return serialized;
+}
+
+const column_definition& map_value_column_computation::get_map_column(const schema& schema) const {
+    if (__builtin_expect(!_map_column, false)) {
+        _map_column = schema.get_column_definition(_map_name);
+        assert(_map_column);
+    }
+    return *_map_column;
+}
+
+bytes map_value_column_computation::serialize() const {
+    return to_bytes(json::to_sstring(to_json()));
 }
 
 bytes_opt map_value_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
-    collection_mutation_view collection_view = row.cells().cell_at(_map_column.id).as_collection_mutation();
-    auto map_t = static_pointer_cast<const map_type_impl>(_map_column.type);
-    return collection_view.data.with_linearized([&] (bytes_view c_bv) {
-        map_type_impl::native_type map_v = value_cast<map_type_impl::native_type>(map_t->deserialize(c_bv));
-        auto it = boost::find_if(map_v, [&](const map_type_impl::native_type::value_type& element) {
-            return element.first == _key;
-        });
-        return it != map_v.end() ? bytes_opt(it->second.serialize()) : bytes_opt{};
-    });
+    /*const column_definition& map_column = get_map_column(schema);
+    collection_mutation_view collection_view = row.cells().cell_at(map_column.id).as_collection_mutation();
+    auto map_t = static_pointer_cast<const map_type_impl>(map_column.type);
+    auto collection_t = dynamic_pointer_cast<const collection_type_impl>(map_column.type);
+    assert(collection_t);
+    auto key_value = map_t->get_values_type()->deserialize(_key);
 
+    auto map_raw = collection_t->to_value(collection_view, cql_serialization_format::internal());
+    map_type_impl::native_type map_v = value_cast<map_type_impl::native_type>(map_t->deserialize(map_raw));
+    static logging::logger srn("SARNAschema");
+    srn.warn("COMPUTING {} {}", map_column.name(), _key);
+    auto it = boost::find_if(map_v, [&](const map_type_impl::native_type::value_type& element) {
+        srn.warn("CHECKING ELEMENT {} vs {}", element.first, key_value);
+        return element.first == key_value;
+    });
+    return it != map_v.end() ? bytes_opt(it->second.serialize()) : bytes_opt{};*/
+
+    const column_definition& map_column = get_map_column(schema);
+    auto&& cell = row.cells().cell_at(map_column.id).as_collection_mutation();
+    auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+    return cell.data.with_linearized([&] (bytes_view cell_bv) {
+        auto m_view = collection_t->deserialize_mutation_form(cell_bv);
+        for (auto entry : m_view.cells) {
+            if (entry.first == _key && entry.second.is_live()) {
+                return bytes_opt{entry.second.value().linearize()};
+            }
+        }
+        return bytes_opt{};
+    });
+}
+
+row_marker map_value_column_computation::compute_row_marker(const schema& schema, const clustering_row& row) const {
+    const column_definition& map_column = get_map_column(schema);
+    auto&& cell = row.cells().cell_at(map_column.id).as_collection_mutation();
+    auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+    return cell.data.with_linearized([&] (bytes_view cell_bv) {
+        auto m_view = collection_t->deserialize_mutation_form(cell_bv);
+        for (auto entry : m_view.cells) {
+            if (entry.first == _key) {
+                if (entry.second.is_live_and_has_ttl()) {
+                    return row_marker(entry.second.timestamp(), entry.second.ttl(), entry.second.expiry());
+                }
+                return row_marker(entry.second.timestamp());
+            }
+        }
+        return row_marker();
+    });
+}
+
+column_computation::const_iterator_range_type map_value_column_computation::dependent_columns(const schema& schema) const {
+    const column_definition& map_column = get_map_column(schema);
+    return boost::make_iterator_range(schema.regular_begin() + map_column.id, schema.regular_begin() + map_column.id + 1);
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {

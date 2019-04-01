@@ -63,6 +63,10 @@ class schema;
 class schema_registry_entry;
 class schema_builder;
 
+namespace secondary_index {
+class target_info;
+}
+
 // Useful functions to manipulate the schema's comparator field
 namespace cell_comparator {
 sstring to_sstring(const schema& s);
@@ -190,8 +194,10 @@ private:
     index_metadata_kind _kind;
     index_options_map _options;
     bool _local;
+    mutable ::shared_ptr<secondary_index::target_info> _parsed_target;
 public:
     index_metadata(const sstring& name, const index_options_map& options, index_metadata_kind kind, is_local_index local);
+    ~index_metadata() = default;
     bool operator==(const index_metadata& other) const;
     bool equals_noname(const index_metadata& other) const;
     const utils::UUID& id() const;
@@ -199,6 +205,8 @@ public:
     const index_metadata_kind kind() const;
     const index_options_map& options() const;
     bool local() const;
+    const secondary_index::target_info& get_target_info(const schema& schema) const;
+    const column_definition* get_target_column(const schema& schema) const;
     static sstring get_default_index_name(const sstring& cf_name, std::optional<sstring> root);
 };
 
@@ -298,6 +306,7 @@ public:
         return _computation ? _computation->clone() : nullptr;
     }
     void set_computed(column_computation_ptr computation) { _computation = std::move(computation); }
+    void init_column_specification(const schema& s);
     // Columns hidden from CQL cannot be in any way retrieved by the user,
     // either explicitly or via the '*' operator, or functions, aggregates, etc.
     bool is_hidden_from_cql() const { return is_view_virtual(); }
@@ -605,8 +614,9 @@ public:
         bytes name;
         data_type type;
     };
+
+    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def) const;
 private:
-    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:

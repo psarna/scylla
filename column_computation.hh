@@ -22,6 +22,7 @@
 #pragma once
 
 #include "bytes.hh"
+#include "row_marker.hh"
 
 class schema;
 class partition_key;
@@ -32,14 +33,19 @@ using column_computation_ptr = std::unique_ptr<column_computation>;
 
 class column_computation {
 public:
+    using const_iterator_range_type = boost::iterator_range<std::vector<column_definition>::const_iterator>;
+
     virtual ~column_computation() {}
 
-    static column_computation_ptr deserialize(bytes raw);
+    static column_computation_ptr deserialize(bytes_view raw);
+    static column_computation_ptr deserialize(const Json::Value& json);
 
     virtual column_computation_ptr clone() const = 0;
 
     virtual bytes serialize() const = 0;
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const = 0;
+    virtual row_marker compute_row_marker(const schema& schema, const clustering_row& row) const = 0;
+    virtual const_iterator_range_type dependent_columns(const schema& schema) const = 0;
 };
 
 class token_column_computation : public column_computation {
@@ -49,17 +55,30 @@ public:
     }
     virtual bytes serialize() const override;
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+    virtual row_marker compute_row_marker(const schema& schema, const clustering_row& row) const override;
+    virtual const_iterator_range_type dependent_columns(const schema& schema) const override;
 };
 
 class map_value_column_computation : public column_computation {
-    const column_definition& _map_column;
-    data_value _key;
+    bytes _map_name;
+    bytes _key;
+    mutable const column_definition* _map_column;
 public:
-    map_value_column_computation(const column_definition& map_column, data_value key) : _map_column(map_column), _key(key) { }
+    map_value_column_computation(bytes map_name, bytes key) : _map_name(map_name), _key(key), _map_column(nullptr) { }
 
     virtual column_computation_ptr clone() const override {
         return std::make_unique<map_value_column_computation>(*this);
     }
     virtual bytes serialize() const override;
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+    virtual row_marker compute_row_marker(const schema& schema, const clustering_row& row) const override;
+    virtual const_iterator_range_type dependent_columns(const schema& schema) const override;
+
+    Json::Value to_json() const;
+    const bytes& key() const {
+        return _key;
+    }
+
+protected:
+    const column_definition& get_map_column(const schema& schema) const;
 };

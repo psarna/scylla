@@ -43,8 +43,50 @@
 #include "index_target.hh"
 #include "index/secondary_index.hh"
 #include <boost/algorithm/string/join.hpp>
+#include "types/map.hh"
 
 namespace cql3 {
+
+::shared_ptr<index_target_identifier> index_target_identifier::raw::prepare(schema_ptr s) const {
+    return ::make_shared<index_target_identifier>(raw_ident->prepare_column_identifier(s));
+}
+
+sstring index_target_identifier::to_string() const {
+    return ident->to_string();
+}
+
+Json::Value index_target_identifier::to_json() const {
+    return Json::Value(ident->to_string());
+}
+
+::shared_ptr<index_target_identifier> map_entry_index_target_identifier::raw::prepare(schema_ptr s) const {
+    auto ident = raw_ident->prepare_column_identifier(s);
+    const column_definition* map_column = s->get_column_definition(ident->name());
+    assert(map_column);
+    assert(map_column->is_multi_cell());
+    static logging::logger srn("SARNAind");
+    srn.warn("TYPEIS {}", map_column->type->cql3_type_name());
+    auto collection_type = dynamic_pointer_cast<const map_type_impl>(map_column->type);
+    assert(collection_type);
+    data_type value_type = collection_type->get_values_type();
+    auto value_constant = dynamic_pointer_cast<constants::value>(raw_key->prepare_as(value_type));
+    return ::make_shared<map_entry_index_target_identifier>(std::move(ident), std::move(value_constant));
+
+}
+
+sstring map_entry_index_target_identifier::to_string() const {
+    return ident->to_string() + "_at_" + key->to_string();
+}
+
+Json::Value map_entry_index_target_identifier::to_json() const {
+    map_value_column_computation computation(ident->name(), *key->_bytes.data());
+    return computation.to_json();
+}
+
+/*
+ *             map_value_column_computation computation(entry.first->name(), *entry.second->_bytes.data());
+            return computation.to_json();
+ */
 
 namespace statements {
 
@@ -55,14 +97,14 @@ const sstring index_target::custom_index_option_name = "class_name";
 
 sstring index_target::as_string() const {
     struct as_string_visitor {
-        sstring operator()(const std::vector<::shared_ptr<column_identifier>>& columns) const {
+        sstring operator()(const multiple_columns& columns) const {
             return "(" + boost::algorithm::join(columns | boost::adaptors::transformed(
-                    [](const ::shared_ptr<cql3::column_identifier>& ident) -> sstring {
+                    [](const single_column& ident) -> sstring {
                         return ident->to_string();
                     }), ",") + ")";
         }
 
-        sstring operator()(const ::shared_ptr<column_identifier>& column) const {
+        sstring operator()(const single_column& column) const {
             return column->to_string();
         }
     };
@@ -94,27 +136,27 @@ sstring index_target::index_option(target_type type) {
 }
 
 ::shared_ptr<index_target::raw>
-index_target::raw::values_of(::shared_ptr<column_identifier::raw> c) {
+index_target::raw::values_of(::shared_ptr<index_target_identifier::raw> c) {
     return ::make_shared<raw>(c, target_type::values);
 }
 
 ::shared_ptr<index_target::raw>
-index_target::raw::keys_of(::shared_ptr<column_identifier::raw> c) {
+index_target::raw::keys_of(::shared_ptr<index_target_identifier::raw> c) {
     return ::make_shared<raw>(c, target_type::keys);
 }
 
 ::shared_ptr<index_target::raw>
-index_target::raw::keys_and_values_of(::shared_ptr<column_identifier::raw> c) {
+index_target::raw::keys_and_values_of(::shared_ptr<index_target_identifier::raw> c) {
     return ::make_shared<raw>(c, target_type::keys_and_values);
 }
 
 ::shared_ptr<index_target::raw>
-index_target::raw::full_collection(::shared_ptr<column_identifier::raw> c) {
+index_target::raw::full_collection(::shared_ptr<index_target_identifier::raw> c) {
     return ::make_shared<raw>(c, target_type::full);
 }
 
 ::shared_ptr<index_target::raw>
-index_target::raw::columns(std::vector<::shared_ptr<column_identifier::raw>> c) {
+index_target::raw::columns(std::vector<::shared_ptr<index_target_identifier::raw>> c) {
     return ::make_shared<raw>(std::move(c), target_type::values);
 }
 
@@ -124,17 +166,17 @@ index_target::raw::prepare(schema_ptr schema) {
         schema_ptr _schema;
         target_type _type;
 
-        ::shared_ptr<index_target> operator()(const std::vector<::shared_ptr<column_identifier::raw>>& columns) const {
-            auto prepared_idents = boost::copy_range<std::vector<::shared_ptr<column_identifier>>>(
-                    columns | boost::adaptors::transformed([this] (const ::shared_ptr<column_identifier::raw>& raw_ident) {
-                        return raw_ident->prepare_column_identifier(_schema);
+        ::shared_ptr<index_target> operator()(const multiple_columns& columns) const {
+            auto prepared_idents = boost::copy_range<std::vector<::shared_ptr<index_target_identifier>>>(
+                    columns | boost::adaptors::transformed([this] (const raw::single_column& raw_ident) {
+                        return raw_ident->prepare(_schema);
                     })
             );
             return ::make_shared<index_target>(std::move(prepared_idents), _type);
         }
 
-        ::shared_ptr<index_target> operator()(::shared_ptr<column_identifier::raw> raw_ident) const {
-            return ::make_shared<index_target>(raw_ident->prepare_column_identifier(_schema), _type);
+        ::shared_ptr<index_target> operator()(const single_column& raw_ident) const {
+            return ::make_shared<index_target>(raw_ident->prepare(_schema), _type);
         }
     };
 
