@@ -50,3 +50,16 @@ public:
     virtual bytes serialize() const override;
     virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
 };
+
+class map_value_column_computation : public column_computation {
+    const column_definition& _map_column;
+    data_value _key;
+public:
+    map_value_column_computation(const column_definition& map_column, data_value key) : _map_column(map_column), _key(key) { }
+
+    virtual column_computation_ptr clone() const override {
+        return std::make_unique<map_value_column_computation>(*this);
+    }
+    virtual bytes serialize() const override;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+};

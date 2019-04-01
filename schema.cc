@@ -34,6 +34,7 @@
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
+#include "types/map.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -1274,6 +1275,23 @@ bytes token_column_computation::serialize() const {
 bytes_opt token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
     dht::i_partitioner& partitioner = dht::global_partitioner();
     return partitioner.token_to_bytes(partitioner.get_token(schema, key));
+}
+
+bytes map_value_column_computation::serialize() const { // FIXME(sarna): serialize properly with sizes
+    return bytes("map_value") + _map_column.name() + _key.serialize();
+}
+
+bytes_opt map_value_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
+    collection_mutation_view collection_view = row.cells().cell_at(_map_column.id).as_collection_mutation();
+    auto map_t = static_pointer_cast<const map_type_impl>(_map_column.type);
+    return collection_view.data.with_linearized([&] (bytes_view c_bv) {
+        map_type_impl::native_type map_v = value_cast<map_type_impl::native_type>(map_t->deserialize(c_bv));
+        auto it = boost::find_if(map_v, [&](const map_type_impl::native_type::value_type& element) {
+            return element.first == _key;
+        });
+        return it != map_v.end() ? bytes_opt(it->second.serialize()) : bytes_opt{};
+    });
+
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
