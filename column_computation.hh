@@ -39,7 +39,7 @@ public:
     virtual column_computation_ptr clone() const = 0;
 
     virtual bytes serialize() const = 0;
-    virtual bytes compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const = 0;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const = 0;
 };
 
 class token_column_computation : public column_computation {
@@ -48,5 +48,5 @@ public:
         return std::make_unique<token_column_computation>(*this);
     }
     virtual bytes serialize() const override;
-    virtual bytes compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
 };
