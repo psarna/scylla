@@ -652,6 +652,10 @@ column_definition::name() const {
     return _name;
 }
 
+void column_definition::init_column_specification(const schema& s) {
+    column_specification = s.make_column_specification(*this);
+}
+
 sstring column_definition::name_as_cql_string() const {
     return cql3::util::maybe_quote(name_as_text());
 }
