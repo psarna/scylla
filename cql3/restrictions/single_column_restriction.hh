@@ -465,7 +465,7 @@ public:
     }
 
     virtual std::vector<bytes_opt> values(const query_options& options) const override {
-        return bind_and_get(_values, options);
+        return bind_and_get(!_values.empty() ? _values : _entry_values, options);
     }
 
     virtual bool is_contains() const override {
