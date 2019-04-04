@@ -166,6 +166,8 @@ public:
         virtual sstring to_string() const override {
             return _type == type::STRING ? sstring(format("'{}'", _text)) : _text;
         }
+
+        ::shared_ptr<term> prepare_as(data_type type);
     };
 
     class marker : public abstract_marker {
