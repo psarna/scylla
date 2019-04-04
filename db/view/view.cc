@@ -140,12 +140,28 @@ std::optional<column_id> view_info::base_non_pk_column_in_view_pk() const {
     return _base_non_pk_column_in_view_pk;
 }
 
+const column_definition* view_info::computed_column_depending_on_base_in_view_pk() const {
+    return _computed_column_depending_on_base_in_view_pk;
+}
+
 void view_info::initialize_base_dependent_fields(const schema& base) {
     for (auto&& view_col : boost::range::join(_schema.partition_key_columns(), _schema.clustering_key_columns())) {
-        auto* base_col = base.get_column_definition(view_col.name());
-        if (base_col && !base_col->is_primary_key()) {
-            _base_non_pk_column_in_view_pk.emplace(base_col->id);
-            break;
+        if (view_col.is_computed()) {
+            auto dependent_columns = view_col.get_computation().dependent_columns(base);
+            for (auto dependent_col : dependent_columns) {
+                const column_definition* base_col = base.get_column_definition(dependent_col.name());
+                if (base_col && !base_col->is_primary_key()) {
+                    _computed_column_depending_on_base_in_view_pk = &view_col;
+                    _base_non_pk_column_in_view_pk = base_col->id;
+                    return;
+                }
+            }
+        } else {
+            auto* base_col = base.get_column_definition(view_col.name());
+            if (base_col && !base_col->is_primary_key()) {
+                _base_non_pk_column_in_view_pk.emplace(base_col->id);
+                return;
+            }
         }
     }
 }
@@ -196,6 +212,12 @@ static bool is_partition_key_empty(
         // Composite partition keys are different: all components
         // are then allowed to be empty.
         return false;
+    }
+    // Computed columns will for sure not be found in base schema.
+    // TODO(sarna): Avoid computing the value more than once.
+    const column_definition* computed_depending_column = view_schema.view_info()->computed_column_depending_on_base_in_view_pk();
+    if (computed_depending_column) {
+        return !bool(computed_depending_column->get_computation().compute_value(base, base_key, update));
     }
     auto* base_col = base.get_column_definition(view_schema.partition_key_columns().front().name());
     switch (base_col->kind) {
@@ -262,6 +284,27 @@ private:
     }
 };
 
+struct view_row_marker_visitor {
+    const schema& base;
+    const clustering_row& base_row;
+    row_marker operator()(const token_column_computation& tc) const {
+        throw std::logic_error("Token computation cannot be used to compute a view row marker");
+    }
+    row_marker operator()(const map_value_column_computation& mvc) const {
+        const column_definition& map_column = mvc.get_map_column(base);
+        auto&& cell = base_row.cells().cell_at(map_column.id).as_collection_mutation();
+        auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+        return cell.data.with_linearized([&] (bytes_view cell_bv) {
+            std::optional<atomic_cell_view> single_value = collection_t->deserialize_single_cell(cell_bv, mvc.key());
+            if (single_value) {
+                return (single_value->is_live_and_has_ttl()) ? row_marker(single_value->timestamp(), single_value->ttl(), single_value->expiry()) : row_marker(single_value->timestamp());
+            }
+            return row_marker();
+        });
+    }
+};
+
 row_marker view_updates::compute_row_marker(const clustering_row& base_row) const {
     /*
      * We need to compute both the timestamp and expiration.
@@ -287,7 +330,11 @@ row_marker view_updates::compute_row_marker(const clustering_row& base_row) cons
      */
 
     auto marker = base_row.marker();
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
+    if (computed_col) {
+        return std::visit(view_row_marker_visitor{*_base, base_row}, computed_col->get_computation().computation());
+    }
     if (col_id) {
         auto& def = _base->regular_column_at(*col_id);
         // Note: multi-cell columns can't be part of the primary key.
@@ -516,17 +563,49 @@ void view_updates::delete_old_entry(const partition_key& base_key, const cluster
     }
 }
 
+/**
+ * This helper function extracts an atomic cell from an "atomic_cell_or_collection" instance.
+ * Since the mentioned instance can hold either an atomic cell or a collection, this helper
+ * determines which type it works with and either returns a cell view itself or uses
+ * the provided collection key to extract a specific cell view from it.
+ */
+static std::optional<atomic_cell_view>
+get_atomic_cell_view_from_cell_or_collection(const atomic_cell_or_collection* cell_or_collection, const column_definition& cdef, std::optional<bytes_view> collection_key) {
+    if (!cell_or_collection) {
+        return {};
+    }
+    if (cdef.is_atomic()) {
+        return cell_or_collection->as_atomic_cell(cdef);
+    }
+    collection_mutation_view col_view = cell_or_collection->as_collection_mutation();
+    return col_view.with_deserialized(*cdef.type, [collection_key] (collection_mutation_view_description descr) -> std::optional<atomic_cell_view> {
+        auto it = std::find_if(descr.cells.begin(), descr.cells.end(), [&collection_key] (const std::pair<bytes_view, atomic_cell_view>& entry) { return entry.first == collection_key; });
+        if (it != descr.cells.end()) {
+            return it->second;
+        }
+        return {};
+    });
+    return {};
+}
+
 void view_updates::do_delete_old_entry(const partition_key& base_key, const clustering_row& existing, const clustering_row& update, gc_clock::time_point now) {
     auto& r = get_view_row(base_key, existing);
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
+    std::optional<bytes_view> collection_key;
+    if (computed_col) {
+        if (auto map_value_computation = std::get_if<map_value_column_computation>(&computed_col->get_computation().computation())) {
+            collection_key = map_value_computation->key();
+        }
+    }
     if (col_id) {
         // We delete the old row using a shadowable row tombstone, making sure that
         // the tombstone deletes everything in the row (or it might still show up).
         // Note: multi-cell columns can't be part of the primary key.
         auto& def = _base->regular_column_at(*col_id);
-        auto cell = existing.cells().cell_at(*col_id).as_atomic_cell(def);
-        if (cell.is_live()) {
-            r.apply(shadowable_tombstone(cell.timestamp(), now));
+        auto cell = get_atomic_cell_view_from_cell_or_collection(&(existing.cells().cell_at(*col_id)), def, collection_key);
+        if (cell->is_live()) {
+            r.apply(shadowable_tombstone(cell->timestamp(), now));
         }
     } else {
         // "update" caused the base row to have been deleted, and !col_id
@@ -654,13 +733,13 @@ void view_updates::generate_update(
     //      there is no corresponding entries.
     //   2) if there is a column not part of the base PK in the view PK, whether it is changed by the update.
     //   3) whether the update actually matches the view SELECT filter
-
     if (!update.key().is_full(*_base)) {
         return;
     }
 
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
-    if (!col_id) {
+    if (!col_id && !computed_col) {
         // The view key is necessarily the same pre and post update.
         if (existing && existing->is_live(*_base)) {
             if (update.is_live(*_base)) {
@@ -674,14 +753,24 @@ void view_updates::generate_update(
         return;
     }
 
+    // If the column is computed and the computation is based on a multi-cell column,
+    // a single cell element can be extracted from it with the key
+    std::optional<bytes_view> collection_key;
+    if (computed_col) {
+        if (auto map_value_computation = std::get_if<map_value_column_computation>(&computed_col->get_computation().computation())) {
+            collection_key = map_value_computation->key();
+        }
+    }
+
     auto* after = update.cells().find_cell(*col_id);
-    // Note: multi-cell columns can't be part of the primary key.
     auto& cdef = _base->regular_column_at(*col_id);
+    auto after_cell_view = get_atomic_cell_view_from_cell_or_collection(after, cdef, collection_key);
     if (existing) {
         auto* before = existing->cells().find_cell(*col_id);
-        if (before && before->as_atomic_cell(cdef).is_live()) {
-            if (after && after->as_atomic_cell(cdef).is_live()) {
-                auto cmp = compare_atomic_cell_for_merge(before->as_atomic_cell(cdef), after->as_atomic_cell(cdef));
+        auto before_cell_view = get_atomic_cell_view_from_cell_or_collection(before, cdef, collection_key);
+        if (before_cell_view && before_cell_view->is_live()) {
+            if (after_cell_view && after_cell_view->is_live()) {
+                auto cmp = compare_atomic_cell_for_merge(*before_cell_view, *after_cell_view);
                 if (cmp == 0) {
                     update_entry(base_key, update, *existing, now);
                 } else {
@@ -695,7 +784,7 @@ void view_updates::generate_update(
     }
 
     // No existing row or the cell wasn't live
-    if (after && after->as_atomic_cell(cdef).is_live()) {
+    if (after_cell_view && after_cell_view->is_live()) {
         create_entry(base_key, update, now);
     }
 }
