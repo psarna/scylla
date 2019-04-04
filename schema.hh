@@ -358,7 +358,7 @@ public:
     bool is_computed() const { return bool(_computation); }
     const column_computation& get_computation() const { return *_computation; }
     column_computation_ptr get_computation_ptr() const {
-        return _computation ? _computation->clone() : nullptr;
+        return _computation ? std::make_unique<column_computation>(*_computation) : nullptr;
     }
     void set_computed(column_computation_ptr computation) { _computation = std::move(computation); }
     // Columns hidden from CQL cannot be in any way retrieved by the user,
@@ -671,7 +671,7 @@ public:
         data_type type;
     };
 private:
-    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
+    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def) const;
     void rebuild();
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:

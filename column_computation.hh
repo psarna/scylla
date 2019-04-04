@@ -22,6 +22,7 @@
 #pragma once
 
 #include "bytes.hh"
+#include "row_marker.hh"
 
 class schema;
 class partition_key;
@@ -29,6 +30,12 @@ class clustering_row;
 
 class column_computation;
 using column_computation_ptr = std::unique_ptr<column_computation>;
+
+namespace detail {
+using const_iterator_range_type = boost::iterator_range<std::vector<column_definition>::const_iterator>;
+}
+
+class token_column_computation {};
 
 /*
  * Column computation represents a computation performed in order to obtain a value for a computed column.
@@ -40,24 +47,23 @@ using column_computation_ptr = std::unique_ptr<column_computation>;
  * generating a value might involve performing a read-before-write if the computation is performed
  * on more values than are present in the update request.
  */
-class column_computation {
+class column_computation final {
 public:
-    virtual ~column_computation() = default;
-
-    static column_computation_ptr deserialize(bytes_view raw);
-    static column_computation_ptr deserialize(const Json::Value& json);
-
-    virtual column_computation_ptr clone() const = 0;
-
-    virtual bytes serialize() const = 0;
-    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const = 0;
-};
-
-class token_column_computation : public column_computation {
+    using computation_type = std::variant<token_column_computation>;
+private:
+    computation_type _computation;
 public:
-    virtual column_computation_ptr clone() const override {
-        return std::make_unique<token_column_computation>(*this);
+    explicit column_computation(computation_type c) : _computation(c) {}
+    ~column_computation() = default;
+
+    static column_computation deserialize(bytes_view raw);
+    static column_computation deserialize(const Json::Value& json);
+
+    const computation_type& computation() const {
+        return _computation;
     }
-    virtual bytes serialize() const override;
-    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+
+    bytes serialize() const;
+    bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const;
+    detail::const_iterator_range_type dependent_columns(const schema& schema) const;
 };
