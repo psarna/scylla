@@ -64,6 +64,10 @@ class schema;
 class schema_registry_entry;
 class schema_builder;
 
+namespace secondary_index {
+class target_info;
+}
+
 // Useful functions to manipulate the schema's comparator field
 namespace cell_comparator {
 sstring to_sstring(const schema& s);
@@ -191,6 +195,7 @@ private:
     index_metadata_kind _kind;
     index_options_map _options;
     bool _local;
+    mutable ::shared_ptr<secondary_index::target_info> _parsed_target;
 public:
     index_metadata(const sstring& name, const index_options_map& options, index_metadata_kind kind, is_local_index local);
     bool operator==(const index_metadata& other) const;
@@ -200,6 +205,8 @@ public:
     const index_metadata_kind kind() const;
     const index_options_map& options() const;
     bool local() const;
+    const secondary_index::target_info& get_target_info(const schema& schema) const;
+    const column_definition* get_target_column(const schema& schema) const;
     static sstring get_default_index_name(const sstring& cf_name, std::optional<sstring> root);
 };
 
