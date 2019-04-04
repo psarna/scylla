@@ -99,7 +99,7 @@ std::ostream& operator<<(std::ostream& os, ordinal_column_id id)
 }
 
 ::shared_ptr<cql3::column_specification>
-schema::make_column_specification(const column_definition& def) {
+schema::make_column_specification(const column_definition& def) const {
     auto id = ::make_shared<cql3::column_identifier>(def.name(), column_name_type(def));
     return ::make_shared<cql3::column_specification>(_raw._ks_name, _raw._cf_name, std::move(id), def.type);
 }
@@ -1275,11 +1275,12 @@ raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool includ
         , _where_clause(where_clause)
 { }
 
-column_computation_ptr column_computation::deserialize(bytes_view raw) {
+
+column_computation column_computation::deserialize(bytes_view raw) {
     return deserialize(json::to_json_value(sstring(raw.begin(), raw.end())));
 }
 
-column_computation_ptr column_computation::deserialize(const Json::Value& parsed) {
+column_computation column_computation::deserialize(const Json::Value& parsed) {
     if (!parsed.isObject()) {
         throw std::runtime_error(format("Invalid column computation value: {}", parsed.toStyledString()));
     }
@@ -1289,20 +1290,44 @@ column_computation_ptr column_computation::deserialize(const Json::Value& parsed
     }
     sstring type = type_json.asString();
     if (type == "token") {
-        return std::make_unique<token_column_computation>();
+        return column_computation(token_column_computation());
     }
     throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", type, parsed.toStyledString()));
 }
 
-bytes token_column_computation::serialize() const {
-    Json::Value serialized(Json::objectValue);
-    serialized["type"] = Json::Value("token");
-    return to_bytes(json::to_sstring(serialized));
+bytes column_computation::serialize() const {
+    struct visitor {
+        bytes operator()(const token_column_computation& tc) const {
+            Json::Value serialized(Json::objectValue);
+            serialized["type"] = Json::Value("token");
+            return to_bytes(json::to_sstring(serialized));
+        }
+    };
+    return std::visit(visitor{}, _computation);
 }
 
-bytes_opt token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
-    dht::i_partitioner& partitioner = dht::global_partitioner();
-    return partitioner.token_to_bytes(partitioner.get_token(schema, key));
+bytes_opt column_computation::compute_value(const schema& s, const partition_key& key, const clustering_row& row) const {
+    struct visitor {
+        const schema& s;
+        const partition_key& key;
+        const clustering_row& row;
+        bytes_opt operator()(const token_column_computation& tc) const {
+            dht::i_partitioner& partitioner = dht::global_partitioner();
+            return partitioner.token_to_bytes(partitioner.get_token(s, key));
+        }
+    };
+    return std::visit(visitor{s, key, row}, _computation);
+
+}
+
+detail::const_iterator_range_type column_computation::dependent_columns(const schema& s) const {
+    struct visitor {
+        const schema& s;
+        detail::const_iterator_range_type operator()(const token_column_computation& tc) const {
+            return s.partition_key_columns();
+        }
+    };
+    return std::visit(visitor{s}, _computation);
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {

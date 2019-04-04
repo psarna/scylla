@@ -2410,7 +2410,8 @@ static computed_columns_map get_computed_columns(const schema_mutations& sm) {
     query::result_set computed_result(*sm.computed_columns_mutation());
     return boost::copy_range<computed_columns_map>(
             computed_result.rows() | boost::adaptors::transformed([] (const query::result_set_row& row) {
-        return computed_columns_map::value_type{to_bytes(row.get_nonnull<sstring>("column_name")), column_computation::deserialize(row.get_nonnull<bytes>("computation"))};
+        return computed_columns_map::value_type{to_bytes(row.get_nonnull<sstring>("column_name")),
+            std::make_unique<column_computation>(column_computation::deserialize(row.get_nonnull<bytes>("computation")))};
     }));
 }
 
@@ -2439,7 +2440,7 @@ static std::vector<column_definition> create_columns_from_column_rows(const quer
         column_computation_ptr computation;
         auto computed_it = computed_columns.find(name_bytes);
         if (computed_it != computed_columns.end()) {
-            computation = computed_it->second->clone();
+            computation = std::make_unique<column_computation>(*computed_it->second);
         }
 
         columns.emplace_back(name_bytes, type, kind, position, is_view_virtual, std::move(computation));
@@ -2842,7 +2843,7 @@ future<> maybe_update_legacy_secondary_index_mv_schema(database& db, view_ptr v)
     // and as such it must be recreated properly.
     if (base_schema->columns_by_name().count(first_view_ck.name()) == 0) {
         schema_builder builder{schema_ptr(v)};
-        builder.mark_column_computed(first_view_ck.name(), std::make_unique<token_column_computation>());
+        builder.mark_column_computed(first_view_ck.name(), std::make_unique<column_computation>(token_column_computation()));
         return service::get_local_migration_manager().announce_view_update(view_ptr(builder.build()), true);
     }
     return make_ready_future<>();
