@@ -111,11 +111,14 @@ create_index_statement::validate(service::storage_proxy& proxy, const service::c
     }
 
     for (auto& target : targets) {
-        auto* ident = std::get_if<::shared_ptr<column_identifier>>(&target->value);
+        auto* ident = std::get_if<index_target::single_column>(&target->value);
         if (!ident) {
             continue;
         }
-        auto cd = schema->get_column_definition((*ident)->name());
+        if ((*ident)->is_computed()) {
+            continue;
+        }
+        auto cd = schema->get_column_definition((*ident)->ident->name());
 
         if (cd == nullptr) {
             throw exceptions::invalid_request_exception(
@@ -178,9 +181,13 @@ create_index_statement::validate(service::storage_proxy& proxy, const service::c
 
 void create_index_statement::validate_for_local_index(schema_ptr schema) const {
     if (!_raw_targets.empty()) {
-            if (const auto* index_pk = std::get_if<std::vector<::shared_ptr<column_identifier::raw>>>(&_raw_targets.front()->value)) {
-                auto base_pk_identifiers = *index_pk | boost::adaptors::transformed([&schema] (const ::shared_ptr<column_identifier::raw>& raw_ident) {
-                    return raw_ident->prepare_column_identifier(schema);
+            if (const auto* index_pk = std::get_if<index_target::raw::multiple_columns>(&_raw_targets.front()->value)) {
+                auto base_pk_identifiers = *index_pk
+                        | boost::adaptors::filtered([] (const index_target::raw::single_column& raw_ident) {
+                            return !raw_ident->is_computed();
+                        })
+                        | boost::adaptors::transformed([&schema] (const index_target::raw::single_column& raw_ident) {
+                    return raw_ident->raw_ident->prepare_column_identifier(schema);
                 });
                 auto remaining_base_pk_columns = schema->partition_key_columns();
                 auto next_expected_base_column = remaining_base_pk_columns.begin();
