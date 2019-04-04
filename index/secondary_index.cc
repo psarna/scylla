@@ -62,7 +62,7 @@ static constexpr auto CK_TARGET_KEY = "ck";
 
 static const std::regex target_regex("^(keys|entries|values|full)\\((.+)\\)$");
 
-target_parser::target_info target_parser::parse(schema_ptr schema, const index_metadata& im) {
+target_info target_parser::parse(schema_ptr schema, const index_metadata& im) {
     sstring target = im.options().at(cql3::statements::index_target::target_option_name);
     try {
         return parse(schema, target);
@@ -71,7 +71,7 @@ target_parser::target_info target_parser::parse(schema_ptr schema, const index_m
     }
 }
 
-target_parser::target_info target_parser::parse(schema_ptr schema, const sstring& target) {
+target_info target_parser::parse(schema_ptr schema, const sstring& target) {
     using namespace cql3::statements;
     target_info info;
 
