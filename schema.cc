@@ -1292,6 +1292,14 @@ bytes_opt token_column_computation::compute_value(const schema& schema, const pa
     return partitioner.token_to_bytes(partitioner.get_token(schema, key));
 }
 
+row_marker token_column_computation::compute_row_marker(const schema& schema, const clustering_row& row) const {
+    throw std::logic_error("Token column computation operates on partition keys and thus does not offer liveness info");
+}
+
+column_computation::const_iterator_range_type token_column_computation::dependent_columns(const schema& schema) const {
+    return schema.partition_key_columns();
+}
+
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
     return x._base_id == y._base_id
         && x._base_name == y._base_name
