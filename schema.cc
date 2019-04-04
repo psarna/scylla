@@ -1275,6 +1275,10 @@ column_computation_ptr column_computation::deserialize(const Json::Value& parsed
     sstring type = type_json.asString();
     if (type == "token") {
         return std::make_unique<token_column_computation>();
+    } else if (type == "map_value") {
+        bytes map_name = to_bytes(parsed.get("map", Json::Value()).asString());
+        bytes map_key = to_bytes(parsed.get("key", Json::Value()).asString());
+        return std::make_unique<map_value_column_computation>(map_name, map_key);
     }
     throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", type, parsed.toStyledString()));
 }
@@ -1288,6 +1292,14 @@ bytes token_column_computation::serialize() const {
 bytes_opt token_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
     dht::i_partitioner& partitioner = dht::global_partitioner();
     return partitioner.token_to_bytes(partitioner.get_token(schema, key));
+}
+
+row_marker token_column_computation::compute_row_marker(const schema& schema, const clustering_row& row) const {
+    throw std::logic_error("Token column computation operates on partition keys and thus does not offer liveness info");
+}
+
+column_computation::const_iterator_range_type token_column_computation::dependent_columns(const schema& schema) const {
+    return schema.partition_key_columns();
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
