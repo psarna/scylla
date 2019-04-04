@@ -58,3 +58,26 @@ public:
     virtual row_marker compute_row_marker(const schema& schema, const clustering_row& row) const override;
     virtual const_iterator_range_type dependent_columns(const schema& schema) const override;
 };
+
+class map_value_column_computation : public column_computation {
+    bytes _map_name;
+    bytes _key;
+public:
+    map_value_column_computation(bytes map_name, bytes key) : _map_name(map_name), _key(key) { }
+
+    virtual column_computation_ptr clone() const override {
+        return std::make_unique<map_value_column_computation>(*this);
+    }
+    virtual bytes serialize() const override;
+    virtual bytes_opt compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const override;
+    virtual row_marker compute_row_marker(const schema& schema, const clustering_row& row) const override;
+    virtual const_iterator_range_type dependent_columns(const schema& schema) const override;
+
+    Json::Value to_json() const;
+    const bytes& key() const {
+        return _key;
+    }
+
+protected:
+    const column_definition& get_map_column(const schema& schema) const;
+};
