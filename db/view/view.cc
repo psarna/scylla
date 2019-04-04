@@ -130,12 +130,25 @@ std::optional<column_id> view_info::base_non_pk_column_in_view_pk() const {
     return _base_non_pk_column_in_view_pk;
 }
 
+const column_definition* view_info::computed_column_depending_on_base_in_view_pk() const {
+    return _computed_column_depending_on_base_in_view_pk;
+}
+
 void view_info::initialize_base_dependent_fields(const schema& base) {
     for (auto&& view_col : boost::range::join(_schema.partition_key_columns(), _schema.clustering_key_columns())) {
+        if (view_col.is_computed()) {
+            for (const column_definition& dependent_col : view_col.get_computation().dependent_columns(base)) {
+                auto* base_col = base.get_column_definition(dependent_col.name());
+                if (base_col && !base_col->is_primary_key()) {
+                    _computed_column_depending_on_base_in_view_pk = &view_col;
+                    return;
+                }
+            }
+        }
         auto* base_col = base.get_column_definition(view_col.name());
         if (base_col && !base_col->is_primary_key()) {
             _base_non_pk_column_in_view_pk.emplace(base_col->id);
-            break;
+            return;
         }
     }
 }
@@ -186,6 +199,12 @@ static bool is_partition_key_empty(
         // Composite partition keys are different: all components
         // are then allowed to be empty.
         return false;
+    }
+    // Computed columns will for sure not be found in base schema.
+    // TODO(sarna): Avoid computing the value more than once.
+    const column_definition* computed_depending_column = view_schema.view_info()->computed_column_depending_on_base_in_view_pk();
+    if (computed_depending_column) {
+        return !bool(computed_depending_column->get_computation().compute_value(base, base_key, update));
     }
     auto* base_col = base.get_column_definition(view_schema.partition_key_columns().front().name());
     switch (base_col->kind) {
@@ -277,7 +296,11 @@ row_marker view_updates::compute_row_marker(const clustering_row& base_row) cons
      */
 
     auto marker = base_row.marker();
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
+    if (computed_col) {
+        return computed_col->get_computation().compute_row_marker(*_base, base_row);
+    }
     if (col_id) {
         auto& def = _base->regular_column_at(*col_id);
         // Note: multi-cell columns can't be part of the primary key.
@@ -490,8 +513,14 @@ void view_updates::delete_old_entry(const partition_key& base_key, const cluster
 
 void view_updates::do_delete_old_entry(const partition_key& base_key, const clustering_row& existing, const clustering_row& update, gc_clock::time_point now) {
     auto& r = get_view_row(base_key, existing);
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
-    if (col_id) {
+    if (computed_col) {
+        row_marker marker = computed_col->get_computation().compute_row_marker(*_base, existing);
+        if (marker.is_live()) {
+            r.apply(shadowable_tombstone(marker.timestamp(), now));
+        }
+    } else if (col_id) {
         // We delete the old row using a shadowable row tombstone, making sure that
         // the tombstone deletes everything in the row (or it might still show up).
         // Note: multi-cell columns can't be part of the primary key.
@@ -631,8 +660,9 @@ void view_updates::generate_update(
         return;
     }
 
+    const column_definition* computed_col = _view_info.computed_column_depending_on_base_in_view_pk();
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
-    if (!col_id) {
+    if (!col_id && !computed_col) {
         // The view key is necessarily the same pre and post update.
         if (existing && existing->is_live(*_base)) {
             if (update.is_live(*_base)) {
@@ -641,6 +671,15 @@ void view_updates::generate_update(
                 delete_old_entry(base_key, *existing, update, now);
             }
         } else if (update.is_live(*_base)) {
+            create_entry(base_key, update, now);
+        }
+        return;
+    }
+
+    if (computed_col) {
+        if (existing) {
+            update_entry(base_key, update, *existing, now);
+        } else {
             create_entry(base_key, update, now);
         }
         return;
