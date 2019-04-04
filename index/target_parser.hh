@@ -51,6 +51,7 @@ struct target_info {
     std::vector<const column_definition*> pk_columns;
     std::vector<const column_definition*> ck_columns;
     cql3::statements::index_target::target_type type;
+    std::vector<column_definition> computed_column_holder;
 };
 
 struct target_parser {
