@@ -43,9 +43,45 @@
 
 #include <seastar/core/shared_ptr.hh>
 #include "cql3/column_identifier.hh"
+#include "cql3/constants.hh"
 #include <variant>
 
 namespace cql3 {
+
+struct index_target_identifier {
+    ::shared_ptr<column_identifier> ident;
+
+    struct raw {
+        ::shared_ptr<column_identifier::raw> raw_ident;
+        raw(::shared_ptr<column_identifier::raw> raw_ident) : raw_ident(raw_ident) {}
+        virtual ::shared_ptr<index_target_identifier> prepare(schema_ptr s) const;
+        virtual bool is_computed() const { return false; };
+    };
+
+    virtual ~index_target_identifier() {}
+    explicit index_target_identifier(::shared_ptr<column_identifier> ident) : ident(ident) {}
+
+    virtual sstring to_string() const;
+    virtual Json::Value to_json() const;
+    virtual bool is_computed() const { return false; };
+};
+
+struct map_entry_index_target_identifier : public index_target_identifier {
+    ::shared_ptr<constants::value> key;
+
+    struct raw : index_target_identifier::raw {
+        ::shared_ptr<constants::literal> raw_key;
+        raw(::shared_ptr<column_identifier::raw> raw_ident, ::shared_ptr<constants::literal> raw_key) : index_target_identifier::raw(raw_ident), raw_key(raw_key) {}
+        virtual ::shared_ptr<index_target_identifier> prepare(schema_ptr s) const override;
+        virtual bool is_computed() const override { return true; };
+    };
+
+    map_entry_index_target_identifier(::shared_ptr<column_identifier> ident, ::shared_ptr<constants::value> k) : index_target_identifier(ident),  key(k) {}
+
+    virtual sstring to_string() const override;
+    virtual Json::Value to_json() const override;
+    virtual bool is_computed() const override { return true; };
+};
 
 namespace statements {
 
@@ -53,8 +89,8 @@ struct index_target {
     static const sstring target_option_name;
     static const sstring custom_index_option_name;
 
-    using single_column =::shared_ptr<column_identifier>;
-    using multiple_columns = std::vector<::shared_ptr<column_identifier>>;
+    using single_column =::shared_ptr<index_target_identifier>;
+    using multiple_columns = std::vector<::shared_ptr<index_target_identifier>>;
     using value_type = std::variant<single_column, multiple_columns>;
 
     enum class target_type {
@@ -64,8 +100,8 @@ struct index_target {
     const value_type value;
     const target_type type;
 
-    index_target(::shared_ptr<column_identifier> c, target_type t) : value(c) , type(t) {}
-    index_target(std::vector<::shared_ptr<column_identifier>> c, target_type t) : value(std::move(c)), type(t) {}
+    index_target(single_column c, target_type t) : value(c) , type(t) {}
+    index_target(multiple_columns c, target_type t) : value(std::move(c)), type(t) {}
 
     sstring as_string() const;
 
@@ -75,21 +111,21 @@ struct index_target {
 
     class raw {
     public:
-        using single_column = ::shared_ptr<column_identifier::raw>;
-        using multiple_columns = std::vector<::shared_ptr<column_identifier::raw>>;
+        using single_column = ::shared_ptr<index_target_identifier::raw>;
+        using multiple_columns = std::vector<::shared_ptr<index_target_identifier::raw>>;
         using value_type = std::variant<single_column, multiple_columns>;
 
         const value_type value;
         const target_type type;
 
-        raw(::shared_ptr<column_identifier::raw> c, target_type t) : value(c), type(t) {}
-        raw(std::vector<::shared_ptr<column_identifier::raw>> pk_columns, target_type t) : value(pk_columns), type(t) {}
+        raw(single_column c, target_type t) : value(c), type(t) {}
+        raw(multiple_columns pk_columns, target_type t) : value(pk_columns), type(t) {}
 
-        static ::shared_ptr<raw> values_of(::shared_ptr<column_identifier::raw> c);
-        static ::shared_ptr<raw> keys_of(::shared_ptr<column_identifier::raw> c);
-        static ::shared_ptr<raw> keys_and_values_of(::shared_ptr<column_identifier::raw> c);
-        static ::shared_ptr<raw> full_collection(::shared_ptr<column_identifier::raw> c);
-        static ::shared_ptr<raw> columns(std::vector<::shared_ptr<column_identifier::raw>> c);
+        static ::shared_ptr<raw> values_of(::shared_ptr<index_target_identifier::raw> c);
+        static ::shared_ptr<raw> keys_of(::shared_ptr<index_target_identifier::raw> c);
+        static ::shared_ptr<raw> keys_and_values_of(::shared_ptr<index_target_identifier::raw> c);
+        static ::shared_ptr<raw> full_collection(::shared_ptr<index_target_identifier::raw> c);
+        static ::shared_ptr<raw> columns(std::vector<::shared_ptr<index_target_identifier::raw>> c);
         ::shared_ptr<index_target> prepare(schema_ptr);
     };
 };
