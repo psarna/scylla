@@ -423,6 +423,10 @@ public:
         return true;
     }
 
+    const std::vector<::shared_ptr<term>>& entry_keys() const {
+        return _entry_keys;
+    }
+
     virtual void merge_with(::shared_ptr<restriction> other_restriction) override {
         if (!other_restriction->is_contains()) {
             throw exceptions::invalid_request_exception(format("Collection column {} can only be restricted by CONTAINS, CONTAINS KEY, or map-entry equality",
