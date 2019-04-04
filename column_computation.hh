@@ -37,6 +37,20 @@ using const_iterator_range_type = boost::iterator_range<std::vector<column_defin
 
 class token_column_computation {};
 
+class map_value_column_computation {
+    bytes _map_name;
+    bytes _key;
+public:
+    map_value_column_computation(bytes map_name, bytes key) : _map_name(map_name), _key(key) { }
+
+    Json::Value to_json() const;
+    const bytes& key() const {
+        return _key;
+    }
+
+    const column_definition& get_map_column(const schema& schema) const;
+};
+
 /*
  * Column computation represents a computation performed in order to obtain a value for a computed column.
  * Computed columns description is also available at docs/system_schema_keyspace.md. They hold values
@@ -49,7 +63,7 @@ class token_column_computation {};
  */
 class column_computation final {
 public:
-    using computation_type = std::variant<token_column_computation>;
+    using computation_type = std::variant<token_column_computation, map_value_column_computation>;
 private:
     computation_type _computation;
 public:

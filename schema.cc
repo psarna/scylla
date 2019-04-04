@@ -34,6 +34,10 @@
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
+#include "types/map.hh"
+#include "json.hh"
+#include "index/target_parser.hh"
+#include "collection_mutation.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -1275,7 +1279,6 @@ raw_view_info::raw_view_info(utils::UUID base_id, sstring base_name, bool includ
         , _where_clause(where_clause)
 { }
 
-
 column_computation column_computation::deserialize(bytes_view raw) {
     return deserialize(json::to_json_value(sstring(raw.begin(), raw.end())));
 }
@@ -1291,6 +1294,10 @@ column_computation column_computation::deserialize(const Json::Value& parsed) {
     sstring type = type_json.asString();
     if (type == "token") {
         return column_computation(token_column_computation());
+    } else if (type == "map_value") {
+        bytes map_name = to_bytes(parsed.get("map", Json::Value()).asString());
+        bytes map_key = to_bytes(parsed.get("key", Json::Value()).asString());
+        return column_computation(map_value_column_computation(map_name, map_key));
     }
     throw std::runtime_error(format("Incorrect column computation type {} found when parsing {}", type, parsed.toStyledString()));
 }
@@ -1301,6 +1308,9 @@ bytes column_computation::serialize() const {
             Json::Value serialized(Json::objectValue);
             serialized["type"] = Json::Value("token");
             return to_bytes(json::to_sstring(serialized));
+        }
+        bytes operator()(const map_value_column_computation& mvc) const {
+            return to_bytes(json::to_sstring(mvc.to_json()));
         }
     };
     return std::visit(visitor{}, _computation);
@@ -1315,6 +1325,16 @@ bytes_opt column_computation::compute_value(const schema& s, const partition_key
             dht::i_partitioner& partitioner = dht::global_partitioner();
             return partitioner.token_to_bytes(partitioner.get_token(s, key));
         }
+        bytes_opt operator()(const map_value_column_computation& mvc) const {
+            const column_definition& map_column = mvc.get_map_column(s);
+            auto&& cell = row.cells().cell_at(map_column.id).as_collection_mutation();
+            auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+            return cell.data.with_linearized([&] (bytes_view cell_bv) {
+                std::optional<atomic_cell_view> single_value = collection_t->deserialize_single_value(cell_bv, mvc.key());
+                return single_value ? bytes_opt{single_value->value().linearize()} : bytes_opt{};
+            });
+        }
     };
     return std::visit(visitor{s, key, row}, _computation);
 
@@ -1326,8 +1346,28 @@ detail::const_iterator_range_type column_computation::dependent_columns(const sc
         detail::const_iterator_range_type operator()(const token_column_computation& tc) const {
             return s.partition_key_columns();
         }
+        detail::const_iterator_range_type operator()(const map_value_column_computation& mvc) const {
+            const column_definition& map_column = mvc.get_map_column(s);
+            return boost::make_iterator_range(s.regular_begin() + map_column.id, s.regular_begin() + map_column.id + 1);
+        }
     };
     return std::visit(visitor{s}, _computation);
+}
+
+Json::Value map_value_column_computation::to_json() const {
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("map_value");
+    serialized["map"] = Json::Value(sstring(_map_name.begin(), _map_name.end()));
+    serialized["key"] = Json::Value(sstring(_key.begin(), _key.end()));
+    return serialized;
+}
+
+const column_definition& map_value_column_computation::get_map_column(const schema& schema) const {
+    const column_definition* col = schema.get_column_definition(_map_name);
+    if (!col) {
+        throw std::runtime_error(format("Map value indexing error: column {} not found in {}", _map_name, schema.cf_name()));
+    }
+    return *col;
 }
 
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
