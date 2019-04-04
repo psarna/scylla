@@ -49,6 +49,7 @@
 #include <boost/range/adaptors.hpp>
 
 #include "json.hh"
+#include "types/map.hh"
 
 const sstring db::index::secondary_index::custom_index_option_name = "class_name";
 const sstring db::index::secondary_index::index_keys_option_name = "index_keys";
@@ -71,22 +72,56 @@ target_info target_parser::parse(schema_ptr schema, const index_metadata& im) {
     }
 }
 
+static bytes generate_available_map_value_column_name(const schema& schema, const bytes& root) {
+    bytes accepted_name = root;
+    int i = 0;
+    while (schema.get_column_definition(accepted_name)) {
+        accepted_name = root + to_bytes("_")+ to_bytes(std::to_string(++i));
+    }
+    return accepted_name;
+}
+
 target_info target_parser::parse(schema_ptr schema, const sstring& target) {
     using namespace cql3::statements;
     target_info info;
 
-    auto get_column = [&schema] (const sstring& name) -> const column_definition* {
-        const column_definition* cdef = schema->get_column_definition(utf8_type->decompose(name));
-        if (!cdef) {
-            throw std::runtime_error(format("Column {} not found", name));
+    auto column_from_json = [&schema] (const Json::Value& parsed_col, std::vector<column_definition>& columns_placeholder) -> const column_definition* {
+        if (parsed_col.isString()) {
+            const column_definition* cdef = schema->get_column_definition(utf8_type->decompose(sstring(parsed_col.asString())));
+            if (!cdef) {
+                throw std::runtime_error(format("Column {} not found", parsed_col.asString()));
+            }
+            return cdef;
         }
-        return cdef;
+        if (parsed_col.isObject()) {
+            auto map_name = parsed_col.get("map", Json::Value());
+            auto map_key = parsed_col.get("key", Json::Value());
+            auto column_name = generate_available_map_value_column_name(*schema, to_bytes(map_name.asString()));
+
+            const column_definition* map_column = schema->get_column_definition(to_bytes(map_name.asString()));
+            if (!map_column) {
+                throw std::runtime_error(format("Map column not found in base schema: {}", map_name.asString()));
+            }
+            auto collection_type = dynamic_pointer_cast<const map_type_impl>(map_column->type);
+            if (!collection_type) {
+                throw std::runtime_error(format("Given column is not a map: {}", map_name.asString()));
+            }
+            auto values_type = collection_type->get_values_type();
+            columns_placeholder.emplace_back(to_bytes(column_name), values_type, column_kind::regular_column, 0, column_view_virtual::no, std::make_unique<column_computation>(column_computation::deserialize(parsed_col)));
+            columns_placeholder.back().init_column_specification(*schema);
+            return &columns_placeholder.back();
+        }
+        throw std::runtime_error(format("Not valid column description: {}", parsed_col.toStyledString()));
     };
 
     std::cmatch match;
     if (std::regex_match(target.data(), match, target_regex)) {
         info.type = index_target::from_sstring(match[1].str());
-        info.pk_columns.push_back(get_column(sstring(match[2].str())));
+        const column_definition* cdef = schema->get_column_definition(utf8_type->decompose(sstring(match[2].str())));
+        if (!cdef) {
+            throw std::runtime_error(format("Column {} not found", match[2].str()));
+        }
+        info.pk_columns.push_back(cdef);
         return info;
     }
 
@@ -99,17 +134,23 @@ target_info target_parser::parse(schema_ptr schema, const sstring& target) {
             throw std::runtime_error("pk and ck fields of JSON definition must be arrays");
         }
         for (auto it = pk.begin(); it != pk.end(); ++it) {
-            info.pk_columns.push_back(get_column(sstring(it->asString())));
+            info.pk_columns.push_back(column_from_json(*it, info.columns_placeholder));
         }
         for (auto it = ck.begin(); it != ck.end(); ++it) {
-            info.ck_columns.push_back(get_column(sstring(it->asString())));
+            info.ck_columns.push_back(column_from_json(*it, info.columns_placeholder));
         }
         info.type = index_target::target_type::values;
         return info;
     }
 
     // Fallback and treat the whole string as a single target
-    return target_info{{get_column(target)}, {}, index_target::target_type::values};
+    const column_definition* cdef = schema->get_column_definition(utf8_type->decompose(target));
+    if (!cdef) {
+        throw std::runtime_error(format("Column {} not found", target));
+    }
+    info.pk_columns = {cdef};
+    info.type = index_target::target_type::values;
+    return info;
 }
 
 bool target_parser::is_local(sstring target_string) {
@@ -131,13 +172,23 @@ sstring target_parser::get_target_column_name_from_string(const sstring& targets
         return targets;
     }
 
+    //TODO(sarna): Target column name should be deprecated altogether,
+    // indexes should be picked based on their primary keys only.
+    // For every query, we should pick an index which narrows the query
+    // as much as possible (e.g. prefer local indexes over global ones)
     Json::Value pk = json_value.get("pk", Json::Value(Json::arrayValue));
     Json::Value ck = json_value.get("ck", Json::Value(Json::arrayValue));
     if (ck.isArray() && !ck.empty()) {
-        return ck[0].asString();
+        if (ck[0].isString()) {
+            return ck[0].asString();
+        }
+        return ck[0]["map"].asString();
     }
     if (pk.isArray() && !pk.empty()) {
-        return pk[0].asString();
+        if (pk[0].isString()) {
+            return pk[0].asString();
+        }
+        return pk[0]["map"].asString();
     }
     return targets;
 }
@@ -149,18 +200,21 @@ sstring target_parser::serialize_targets(const std::vector<::shared_ptr<cql3::st
         Json::Value operator()(const index_target::multiple_columns& columns) const {
             Json::Value json_array(Json::arrayValue);
             for (const auto& column : columns) {
-                json_array.append(Json::Value(column->to_string()));
+                json_array.append(column->to_json());
             }
             return json_array;
         }
 
         Json::Value operator()(const index_target::single_column& column) const {
-            return Json::Value(column->to_string());
+            return column->to_json();
         }
     };
 
     if (targets.size() == 1 && std::holds_alternative<index_target::single_column>(targets.front()->value)) {
-        return std::get<index_target::single_column>(targets.front()->value)->to_string();
+        auto single_target = std::get<index_target::single_column>(targets.front()->value);
+        if (!single_target->is_computed()) {
+            return single_target->to_string();
+        }
     }
 
     Json::Value json_map(Json::objectValue);
