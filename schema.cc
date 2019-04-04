@@ -1306,6 +1306,64 @@ column_computation::const_iterator_range_type token_column_computation::dependen
     return schema.partition_key_columns();
 }
 
+Json::Value map_value_column_computation::to_json() const {
+    Json::Value serialized(Json::objectValue);
+    serialized["type"] = Json::Value("map_value");
+    serialized["map"] = Json::Value(sstring(_map_name.begin(), _map_name.end()));
+    serialized["key"] = Json::Value(sstring(_key.begin(), _key.end()));
+    return serialized;
+}
+
+const column_definition& map_value_column_computation::get_map_column(const schema& schema) const {
+    const column_definition* col = schema.get_column_definition(_map_name);
+    assert(col);
+    return *col;
+}
+
+bytes map_value_column_computation::serialize() const {
+    return to_bytes(json::to_sstring(to_json()));
+}
+
+bytes_opt map_value_column_computation::compute_value(const schema& schema, const partition_key& key, const clustering_row& row) const {
+    const column_definition& map_column = get_map_column(schema);
+    auto&& cell = row.cells().cell_at(map_column.id).as_collection_mutation();
+    auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+    return cell.data.with_linearized([&] (bytes_view cell_bv) {
+        auto m_view = collection_t->deserialize_mutation_form(cell_bv);
+        for (auto entry : m_view.cells) {
+            if (entry.first == _key && entry.second.is_live()) {
+                return bytes_opt{entry.second.value().linearize()};
+            }
+        }
+        return bytes_opt{};
+    });
+}
+
+row_marker map_value_column_computation::compute_row_marker(const schema& schema, const clustering_row& row) const {
+    const column_definition& map_column = get_map_column(schema);
+    auto&& cell = row.cells().cell_at(map_column.id).as_collection_mutation();
+    auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
+
+    return cell.data.with_linearized([&] (bytes_view cell_bv) {
+        auto m_view = collection_t->deserialize_mutation_form(cell_bv);
+        for (auto entry : m_view.cells) {
+            if (entry.first == _key) {
+                if (entry.second.is_live_and_has_ttl()) {
+                    return row_marker(entry.second.timestamp(), entry.second.ttl(), entry.second.expiry());
+                }
+                return row_marker(entry.second.timestamp());
+            }
+        }
+        return row_marker();
+    });
+}
+
+column_computation::const_iterator_range_type map_value_column_computation::dependent_columns(const schema& schema) const {
+    const column_definition& map_column = get_map_column(schema);
+    return boost::make_iterator_range(schema.regular_begin() + map_column.id, schema.regular_begin() + map_column.id + 1);
+}
+
 bool operator==(const raw_view_info& x, const raw_view_info& y) {
     return x._base_id == y._base_id
         && x._base_name == y._base_name
