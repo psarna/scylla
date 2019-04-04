@@ -825,15 +825,19 @@ createIndexStatement returns [::shared_ptr<create_index_statement> expr]
       { $expr = ::make_shared<create_index_statement>(cf, name, targets, props, if_not_exists); }
     ;
 
+indexColumnIdent returns [shared_ptr<cql3::index_target_identifier::raw> id]
+    : c=cident                     { $id = ::make_shared<cql3::index_target_identifier::raw>(c); }
+    ;
+
 indexIdent returns [::shared_ptr<index_target::raw> id]
     @init {
-        std::vector<::shared_ptr<cql3::column_identifier::raw>> columns;
+        std::vector<::shared_ptr<cql3::index_target_identifier::raw>> columns;
     }
-    : c=cident                   { $id = index_target::raw::values_of(c); }
-    | K_KEYS '(' c=cident ')'    { $id = index_target::raw::keys_of(c); }
-    | K_ENTRIES '(' c=cident ')' { $id = index_target::raw::keys_and_values_of(c); }
-    | K_FULL '(' c=cident ')'    { $id = index_target::raw::full_collection(c); }
-    | '(' c1=cident { columns.push_back(c1); } ( ',' cn=cident { columns.push_back(cn); } )* ')' { $id = index_target::raw::columns(std::move(columns)); }
+    : c=indexColumnIdent                   { $id = index_target::raw::values_of(c); }
+    | K_KEYS '(' c=indexColumnIdent ')'    { $id = index_target::raw::keys_of(c); }
+    | K_ENTRIES '(' c=indexColumnIdent ')' { $id = index_target::raw::keys_and_values_of(c); }
+    | K_FULL '(' c=indexColumnIdent ')'    { $id = index_target::raw::full_collection(c); }
+    | '(' c1=indexColumnIdent { columns.push_back(c1); } ( ',' cn=indexColumnIdent { columns.push_back(cn); } )* ')' { $id = index_target::raw::columns(std::move(columns)); }
 
     ;
 
