@@ -99,7 +99,7 @@ std::ostream& operator<<(std::ostream& os, ordinal_column_id id)
 }
 
 ::shared_ptr<cql3::column_specification>
-schema::make_column_specification(const column_definition& def) {
+schema::make_column_specification(const column_definition& def) const {
     auto id = ::make_shared<cql3::column_identifier>(def.name(), column_name_type(def));
     return ::make_shared<cql3::column_specification>(_raw._ks_name, _raw._cf_name, std::move(id), def.type);
 }
@@ -646,6 +646,10 @@ column_definition::name_as_text() const {
 const bytes&
 column_definition::name() const {
     return _name;
+}
+
+void column_definition::init_column_specification(const schema& s) {
+    column_specification = s.make_column_specification(*this);
 }
 
 sstring column_definition::name_as_cql_string() const {
