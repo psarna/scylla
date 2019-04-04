@@ -34,6 +34,9 @@
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
+#include "types/map.hh"
+#include "json.hh"
+#include "index/target_parser.hh"
 
 constexpr int32_t schema::NAME_LENGTH;
 
@@ -487,6 +490,18 @@ const index_options_map& index_metadata::options() const {
 
 bool index_metadata::local() const {
     return _local;
+}
+
+const secondary_index::target_info& index_metadata::get_target_info(const schema& schema) const {
+    if (!_parsed_target) {
+        _parsed_target = ::make_shared<secondary_index::target_info>(secondary_index::target_parser::parse(schema.shared_from_this(), *this));
+    }
+    return *_parsed_target;
+}
+
+const column_definition* index_metadata::get_target_column(const schema& schema) const {
+    const auto& target_info = get_target_info(schema);
+    return local() ? target_info.ck_columns.front() : target_info.pk_columns.front();
 }
 
 sstring index_metadata::get_default_index_name(const sstring& cf_name,
