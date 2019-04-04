@@ -838,6 +838,7 @@ createIndexStatement returns [::shared_ptr<create_index_statement> expr]
 
 indexColumnIdent returns [shared_ptr<cql3::index_target_identifier::raw> id]
     : c=cident                     { $id = ::make_shared<cql3::index_target_identifier::raw>(c); }
+    | c=cident '[' v=constant ']'  { $id = ::make_shared<cql3::map_entry_index_target_identifier::raw>(c, v); }
     ;
 
 indexIdent returns [::shared_ptr<index_target::raw> id]
