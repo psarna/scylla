@@ -360,19 +360,19 @@ int statement_restrictions::score(const secondary_index::index& index) const {
 }
 
 std::pair<std::optional<secondary_index::index>, ::shared_ptr<cql3::restrictions::restrictions>> statement_restrictions::find_idx(secondary_index::secondary_index_manager& sim) const {
+    using namespace cql3::restrictions;
+
     std::optional<secondary_index::index> chosen_index;
     int chosen_index_score = 0;
-    ::shared_ptr<cql3::restrictions::restrictions> chosen_index_restrictions;
+    ::shared_ptr<restrictions> chosen_index_restrictions;
 
     for (const auto& index : sim.list_indexes()) {
-        for (::shared_ptr<cql3::restrictions::restrictions> restriction : index_restrictions()) {
-            for (const auto& cdef : restriction->get_column_defs()) {
-                if (index.depends_on(*cdef)) {
-                    if (score(index) > chosen_index_score) {
-                        chosen_index = index;
-                        chosen_index_score = score(index);
-                        chosen_index_restrictions = restriction;
-                    }
+        for (::shared_ptr<restrictions> restriction : index_restrictions()) {
+            if (restriction->is_supported_by(index, *_schema)) {
+                if (score(index) > chosen_index_score) {
+                    chosen_index = index;
+                    chosen_index_score = score(index);
+                    chosen_index_restrictions = restriction;
                 }
             }
         }
