@@ -1223,3 +1223,116 @@ SEASTAR_TEST_CASE(test_computed_columns) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_map_value_indexing_basic) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)");
+
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})");
+
+        cquery_nofail(e, "CREATE INDEX local_m1_1 ON t ((id),m1[1])");
+        cquery_nofail(e, "CREATE INDEX local_m1_2 ON t ((id),m1[2])");
+        cquery_nofail(e, "CREATE INDEX local_m1_3 ON t ((id),m1[3])");
+        cquery_nofail(e, "CREATE INDEX global_m2 ON t (m1[2])");
+        cquery_nofail(e, "CREATE INDEX global_m3 ON t (m1[3])");
+        cquery_nofail(e, "CREATE INDEX global1 ON t (m2['aa'])");
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[3] = 3");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}, {{int32_type->decompose(3)}}});
+
+            msg = cquery_nofail(e, "SELECT id FROM t WHERE id = 2 and m1[3] = 3");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        cquery_nofail(e, "UPDATE t SET m1[2] = 2 WHERE id = 3");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[2] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(3)}}});
+        });
+
+        cquery_nofail(e, "UPDATE t SET m1[2] = null WHERE id = 1");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[2] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(3)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m1[4] = 8").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m2['aa'] = 'bb'");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m2['a'] = 'b'").get(), exceptions::invalid_request_exception);
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_indexing_tombstones) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (id int, c int, m1 map<int, int>, PRIMARY KEY(id,c))");
+
+        cquery_nofail(e, "INSERT INTO t (id, c, m1) VALUES (1, 1, {1:1,2:2,3:3})");
+
+        cquery_nofail(e, "CREATE INDEX local1 ON t ((id),m1[1])");
+        cquery_nofail(e, "CREATE INDEX global1 ON t (m1[1])");
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT m1_1 FROM local1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+
+            msg = cquery_nofail(e, "SELECT m1_1 FROM global1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+
+        // Value for m1[1] is overwritten, so it should be correctly updated in the views
+        cquery_nofail(e, "INSERT INTO t (id, c, m1) VALUES (1, 1, {1:2})");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT m1_1 FROM local1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+
+            msg = cquery_nofail(e, "SELECT m1_1 FROM global1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        // Querying should still return correct results
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE id = 1 AND m1[1] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+
+            msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[1] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_operations) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (p1 int, p2 int, c int, v1 map<int,varint>, v2 map<text,decimal>, PRIMARY KEY ((p1,p2),c))");
+        // Both global and local indexes can be created
+        cquery_nofail(e, "CREATE INDEX ON t (v1[2])");
+        cquery_nofail(e, "CREATE INDEX ON t ((p1,p2),v1[3])");
+
+        // Duplicate index cannot be created, even if it's named
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        cquery_nofail(e, "CREATE INDEX IF NOT EXISTS named_idx ON t ((p1,p2),v1[3])");
+
+        // Even with global index dropped, duplicated local index cannot be created
+        cquery_nofail(e, "DROP INDEX t_v1_entry_idx");
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+
+        cquery_nofail(e, "DROP INDEX t_v1_entry_idx_1");
+        cquery_nofail(e, "CREATE INDEX named_idx ON t ((p1,p2),v1[3])");
+        cquery_nofail(e, "DROP INDEX named_idx");
+
+        BOOST_REQUIRE_THROW(e.execute_cql("DROP INDEX named_idx").get(), exceptions::invalid_request_exception);
+        cquery_nofail(e, "DROP INDEX IF EXISTS named_idx");
+
+        // Even if a default name is taken, it's possible to create a local index
+        cquery_nofail(e, "CREATE INDEX t_v1_entry_idx_1 ON t(v2['my_key'])");
+        cquery_nofail(e, "CREATE INDEX ON t(v1[04])");
+    });
+}
