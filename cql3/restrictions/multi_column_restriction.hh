@@ -145,13 +145,14 @@ protected:
             if (!allow_local && index.metadata().local()) {
                 continue;
             }
-            if (is_supported_by(index))
+            if (is_supported_by(index, index_manager.get_schema())) {
                 return true;
+            }
         }
         return false;
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const = 0;
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const = 0;
 
     /**
      * @return true if the restriction contains at least one column of each
@@ -219,7 +220,7 @@ public:
         return abstract_restriction::term_uses_function(_value, ks_name, function_name);
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         for (auto* cdef : _column_defs) {
             if (index.supports_expression(*cdef, cql3::operator_type::EQ)) {
                 return true;
@@ -287,7 +288,7 @@ class multi_column_restriction::IN : public multi_column_restriction {
 public:
     using multi_column_restriction::multi_column_restriction;
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         for (auto* cdef : _column_defs) {
             if (index.supports_expression(*cdef, cql3::operator_type::IN)) {
                 return true;
@@ -444,7 +445,7 @@ public:
         : slice(schema, defs, term_slice::new_instance(bound, inclusive, term))
     { }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         for (auto* cdef : _column_defs) {
             if (_slice.is_supported_by(*cdef, index)) {
                 return true;

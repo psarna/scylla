@@ -77,6 +77,10 @@ public:
         return false;
     }
 
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
+        return false;
+    }
+
 #if 0
     void add_index_expression_to(std::vector<::shared_ptr<index_expression>>& expressions,
                                          const query_options& options) override {
