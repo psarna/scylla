@@ -45,6 +45,8 @@
 #include "cql3/restrictions/single_column_restriction.hh"
 #include "schema.hh"
 #include "types.hh"
+#include <boost/algorithm/cxx11/any_of.hpp>
+#include <boost/range/adaptors.hpp>
 
 namespace cql3 {
 
@@ -171,6 +173,12 @@ public:
             }
         }
         return false;
+    }
+
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
+        return boost::algorithm::any_of(_restrictions | boost::adaptors::map_values, [&index, &schema] (const ::shared_ptr<single_column_restriction>& restr) {
+            return restr->is_supported_by(index, schema);
+        });
     }
 
     /**
