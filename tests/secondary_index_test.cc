@@ -951,7 +951,7 @@ SEASTAR_TEST_CASE(test_computed_columns) {
         auto global2 = e.local_db().find_schema("ks", "global2_index");
 
         bytes token_column_name("idx_token");
-        data_value token_computation(bytes("token"));
+        data_value token_computation(bytes("{\"type\":\"token\"}"));
         BOOST_REQUIRE_EQUAL(local1->get_column_definition(token_column_name), nullptr);
         BOOST_REQUIRE_EQUAL(local2->get_column_definition(token_column_name), nullptr);
         BOOST_REQUIRE(global1->get_column_definition(token_column_name)->is_computed());
@@ -961,6 +961,43 @@ SEASTAR_TEST_CASE(test_computed_columns) {
         assert_that(msg).is_rows().with_rows({
             {{bytes_type->decompose(token_computation)}},
             {{bytes_type->decompose(token_computation)}}
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_indexing) {
+    return do_with_cql_env_thread([] (auto& e) {
+        e.execute_cql("CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)").get();
+
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
+
+        e.execute_cql("CREATE INDEX local_m1_1 ON t ((id),m1[1])").get();
+        e.execute_cql("CREATE INDEX local_m1_2 ON t ((id),m1[2])").get();
+        e.execute_cql("CREATE INDEX local_m1_3 ON t ((id),m1[3])").get();
+        e.execute_cql("CREATE INDEX global_m2 ON t (m1[2])").get();
+        e.execute_cql("CREATE INDEX global_m3 ON t (m1[3])").get();
+        e.execute_cql("CREATE INDEX global1 ON t (m2['aa'])").get();
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[3] = 3").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}, {{int32_type->decompose(3)}}});
+
+            msg = e.execute_cql("SELECT id FROM t WHERE id = 2 and m1[3] = 3").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        e.execute_cql("UPDATE t SET m1[2] = 2 WHERE id = 3").get();
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[2] = 2").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(3)}}});
+        });
+
+        e.execute_cql("UPDATE t SET m1[2] = null WHERE id = 1").get();
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[2] = 2").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(3)}}});
         });
     });
 }
