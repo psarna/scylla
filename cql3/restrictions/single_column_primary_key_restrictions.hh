@@ -371,6 +371,10 @@ public:
         return _restrictions->has_supporting_index(index_manager, allow_local);
     }
 
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
+        return _restrictions->is_supported_by(index, schema);
+    }
+
 #if 0
     virtual void addIndexExpressionTo(List<IndexExpression> expressions, QueryOptions options) override {
         restrictions.addIndexExpressionTo(expressions, options);
