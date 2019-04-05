@@ -1223,3 +1223,78 @@ SEASTAR_TEST_CASE(test_computed_columns) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_map_value_indexing) {
+    return do_with_cql_env_thread([] (auto& e) {
+        e.execute_cql("CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)").get();
+
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
+
+        e.execute_cql("CREATE INDEX local_m1_1 ON t ((id),m1[1])").get();
+        e.execute_cql("CREATE INDEX local_m1_2 ON t ((id),m1[2])").get();
+        e.execute_cql("CREATE INDEX local_m1_3 ON t ((id),m1[3])").get();
+        e.execute_cql("CREATE INDEX global_m2 ON t (m1[2])").get();
+        e.execute_cql("CREATE INDEX global_m3 ON t (m1[3])").get();
+        e.execute_cql("CREATE INDEX global1 ON t (m2['aa'])").get();
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[3] = 3").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}, {{int32_type->decompose(3)}}});
+
+            msg = e.execute_cql("SELECT id FROM t WHERE id = 2 and m1[3] = 3").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        e.execute_cql("UPDATE t SET m1[2] = 2 WHERE id = 3").get();
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[2] = 2").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(3)}}});
+        });
+
+        e.execute_cql("UPDATE t SET m1[2] = null WHERE id = 1").get();
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m1[2] = 2").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(3)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m1[4] = 8").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m2['aa'] = 'bb'").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m2['a'] = 'b'").get(), exceptions::invalid_request_exception);
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_operations) {
+    return do_with_cql_env_thread([] (auto& e) {
+        e.execute_cql("CREATE TABLE t (p1 int, p2 int, c int, v1 map<int,varint>, v2 map<text,decimal>, PRIMARY KEY ((p1,p2),c))").get();
+        // Both global and local indexes can be created
+        e.execute_cql("CREATE INDEX ON t (v1[2])").get();
+        e.execute_cql("CREATE INDEX ON t ((p1,p2),v1[3])").get();
+
+        // Duplicate index cannot be created, even if it's named
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        e.execute_cql("CREATE INDEX IF NOT EXISTS named_idx ON t ((p1,p2),v1[3])").get();
+
+        // Even with global index dropped, duplicated local index cannot be created
+        e.execute_cql("DROP INDEX t_v1_entry_idx").get();
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+
+        e.execute_cql("DROP INDEX t_v1_entry_idx_1").get();
+        e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get();
+        e.execute_cql("DROP INDEX named_idx").get();
+
+        BOOST_REQUIRE_THROW(e.execute_cql("DROP INDEX named_idx").get(), exceptions::invalid_request_exception);
+        e.execute_cql("DROP INDEX IF EXISTS named_idx").get();
+
+        // Even if a default name is taken, it's possible to create a local index
+        e.execute_cql("CREATE INDEX t_v1_entry_idx_1 ON t(v2['my_key'])").get();
+        e.execute_cql("CREATE INDEX ON t(v1[04])").get();
+    });
+}
