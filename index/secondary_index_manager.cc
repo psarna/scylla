@@ -110,6 +110,10 @@ static bytes get_available_token_column_name(const schema& schema) {
     return accepted_name;
 }
 
+const schema& secondary_index_manager::get_schema() const {
+    return *_cf.schema();
+}
+
 view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im) const {
     auto schema = _cf.schema();
     sstring index_target_name = im.options().at(cql3::statements::index_target::target_option_name);
