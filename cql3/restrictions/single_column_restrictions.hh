@@ -173,6 +173,15 @@ public:
         return false;
     }
 
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
+        for (auto&& e : _restrictions) {
+            if (e.second->is_supported_by(index, schema)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Returns the column after the specified one.
      *
