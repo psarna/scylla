@@ -1223,3 +1223,182 @@ SEASTAR_TEST_CASE(test_computed_columns) {
         });
     });
 }
+
+SEASTAR_TEST_CASE(test_map_value_indexing_basic) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)");
+
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})");
+
+        cquery_nofail(e, "CREATE INDEX local_m1_1 ON t ((id),m1[1])");
+        cquery_nofail(e, "CREATE INDEX local_m1_2 ON t ((id),m1[2])");
+        cquery_nofail(e, "CREATE INDEX local_m1_3 ON t ((id),m1[3])");
+        cquery_nofail(e, "CREATE INDEX global_m2 ON t (m1[2])");
+        cquery_nofail(e, "CREATE INDEX global_m3 ON t (m1[3])");
+        cquery_nofail(e, "CREATE INDEX global1 ON t (m2['aa'])");
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[3] = 3");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}, {{int32_type->decompose(3)}}});
+
+            msg = cquery_nofail(e, "SELECT id FROM t WHERE id = 2 and m1[3] = 3");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        cquery_nofail(e, "UPDATE t SET m1[2] = 2 WHERE id = 3");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[2] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(3)}}});
+        });
+
+        cquery_nofail(e, "UPDATE t SET m1[2] = null WHERE id = 1");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[2] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(3)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m1[4] = 8").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m2['aa'] = 'bb'");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m2['a'] = 'b'").get(), exceptions::invalid_request_exception);
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_indexing_tombstones) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (id int, c int, m1 map<int, int>, PRIMARY KEY(id,c))");
+
+        cquery_nofail(e, "INSERT INTO t (id, c, m1) VALUES (1, 1, {1:1,2:2,3:3})");
+
+        cquery_nofail(e, "CREATE INDEX local1 ON t ((id),m1[1])");
+        cquery_nofail(e, "CREATE INDEX global1 ON t (m1[1])");
+
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT m1_1 FROM local1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+
+            msg = cquery_nofail(e, "SELECT m1_1 FROM global1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+
+        // Value for m1[1] is overwritten, so it should be correctly updated in the views
+        cquery_nofail(e, "INSERT INTO t (id, c, m1) VALUES (1, 1, {1:2})");
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT m1_1 FROM local1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+
+            msg = cquery_nofail(e, "SELECT m1_1 FROM global1_index");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(2)}}});
+        });
+
+        // Querying should still return correct results
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT id FROM t WHERE id = 1 AND m1[1] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+
+            msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[1] = 2");
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
+    });
+}
+
+static ::shared_ptr<service::pager::paging_state> extract_paging_state(::shared_ptr<cql_transport::messages::result_message> res) {
+    auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(res);
+    auto paging_state = rows->rs().get_metadata().paging_state();
+    if (!paging_state) {
+        return nullptr;
+    }
+    return ::make_shared<service::pager::paging_state>(*paging_state);
+};
+
+static size_t count_rows_fetched(::shared_ptr<cql_transport::messages::result_message> res) {
+    auto rows = dynamic_pointer_cast<cql_transport::messages::result_message::rows>(res);
+    return rows->rs().result_set().size();
+};
+
+SEASTAR_TEST_CASE(test_map_value_indexing_paging) {
+    return do_with_cql_env_thread([] (auto& e) {
+        e.execute_cql("CREATE TABLE tab (pk int, ck text, v int, v2 text, v3 map<int, text>, PRIMARY KEY (pk, ck))").get();
+        e.execute_cql("CREATE INDEX ON tab (v3[7])").get();
+
+        sstring big_string(4096, 'j');
+        // There should be enough rows to use multiple pages
+        for (int i = 0; i < 8 * 1024; ++i) {
+            e.execute_cql(format("INSERT INTO tab (pk, ck, v, v2, v3) VALUES ({}, 'hello{}', 1, '{}', {{1: 'abc', 7: 'defg0'}})", i % 3, i, big_string)).get();
+            e.execute_cql(format("INSERT INTO tab (pk, ck, v, v2, v3) VALUES ({}, 'hello{}', 1, '{}', {{1: 'abc', 7: 'defg1'}})", i % 3, i, big_string)).get();
+        }
+        e.execute_cql(format("INSERT INTO tab (pk, ck, v, v2, v3) VALUES ({}, 'hello{}', 1, '{}', {{3: 'defg', 7: 'lalala'}})", 99999, 99999, big_string)).get();
+
+        for (int page_size : std::vector<int>{1, 7, 101, 999}) {
+            eventually([&] {
+                std::unique_ptr<cql3::query_options> qo;
+                ::shared_ptr<service::pager::paging_state> paging_state;
+                ::shared_ptr<cql_transport::messages::result_message> msg;
+                size_t rows_fetched = 0;
+                while (rows_fetched < 8 * 1024) {
+                    qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                            cql3::query_options::specific_options{page_size, paging_state, {}, api::new_timestamp()});
+                    msg = e.execute_cql("SELECT * FROM tab WHERE v3[7] = 'defg1'", std::move(qo)).get0();
+                    rows_fetched += count_rows_fetched(msg);
+                    paging_state = extract_paging_state(msg);
+                    BOOST_REQUIRE(paging_state || rows_fetched == 8 * 1024);
+                }
+                BOOST_REQUIRE_EQUAL(rows_fetched, 8 * 1024);
+            });
+        }
+
+        eventually([&] {
+            std::unique_ptr<cql3::query_options> qo;
+            ::shared_ptr<service::pager::paging_state> paging_state;
+            ::shared_ptr<cql_transport::messages::result_message> msg;
+            size_t rows_fetched = 0;
+            while (rows_fetched  == 0) {
+                qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                        cql3::query_options::specific_options{716, paging_state, {}, api::new_timestamp()});
+                msg = e.execute_cql("SELECT pk, ck FROM tab WHERE v3[7] = 'lalala'", std::move(qo)).get0();
+                rows_fetched = count_rows_fetched(msg);
+                paging_state = extract_paging_state(msg);
+                BOOST_REQUIRE(paging_state || rows_fetched == 1);
+            }
+            BOOST_REQUIRE_EQUAL(rows_fetched, 1);
+            assert_that(msg).is_rows().with_rows({
+                {int32_type->decompose(99999), utf8_type->decompose("hello99999")},
+            });
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_map_value_operations) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (p1 int, p2 int, c int, v1 map<int,varint>, v2 map<text,decimal>, PRIMARY KEY ((p1,p2),c))");
+        // Both global and local indexes can be created
+        cquery_nofail(e, "CREATE INDEX ON t (v1[2])");
+        cquery_nofail(e, "CREATE INDEX ON t ((p1,p2),v1[3])");
+
+        // Duplicate index cannot be created, even if it's named
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+        cquery_nofail(e, "CREATE INDEX IF NOT EXISTS named_idx ON t ((p1,p2),v1[3])");
+
+        // Even with global index dropped, duplicated local index cannot be created
+        cquery_nofail(e, "DROP INDEX t_v1_entry_idx");
+        BOOST_REQUIRE_THROW(e.execute_cql("CREATE INDEX named_idx ON t ((p1,p2),v1[3])").get(), exceptions::invalid_request_exception);
+
+        cquery_nofail(e, "DROP INDEX t_v1_entry_idx_1");
+        cquery_nofail(e, "CREATE INDEX named_idx ON t ((p1,p2),v1[3])");
+        cquery_nofail(e, "DROP INDEX named_idx");
+
+        BOOST_REQUIRE_THROW(e.execute_cql("DROP INDEX named_idx").get(), exceptions::invalid_request_exception);
+        cquery_nofail(e, "DROP INDEX IF EXISTS named_idx");
+
+        // Even if a default name is taken, it's possible to create a local index
+        cquery_nofail(e, "CREATE INDEX t_v1_entry_idx_1 ON t(v2['my_key'])");
+        cquery_nofail(e, "CREATE INDEX ON t(v1[04])");
+    });
+}
