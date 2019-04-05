@@ -102,6 +102,9 @@ public:
     virtual bool has_supporting_index(const secondary_index::secondary_index_manager& index_manager, allow_local_index allow_local) const override {
         return false;
     }
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
+        return false;
+    }
     sstring to_string() const override {
         return "Initial restrictions";
     }

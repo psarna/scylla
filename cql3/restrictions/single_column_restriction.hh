@@ -90,13 +90,14 @@ public:
             if (!allow_local && index.metadata().local()) {
                 continue;
             }
-            if (is_supported_by(index))
+            if (is_supported_by(index, index_manager.get_schema())) {
                 return true;
+            }
         }
         return false;
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const = 0;
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const = 0;
     using restriction::is_satisfied_by;
     virtual bool is_satisfied_by(bytes_view data, const query_options& options) const = 0;
     virtual ::shared_ptr<single_column_restriction> apply_to(const column_definition& cdef) = 0;
@@ -140,7 +141,7 @@ public:
         return restriction::term_uses_function(_value, ks_name, function_name);
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         return index.supports_expression(_column_def, cql3::operator_type::EQ);
     }
 
@@ -188,7 +189,7 @@ public:
         : single_column_restriction(op::IN, column_def)
     { }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         return index.supports_expression(_column_def, cql3::operator_type::IN);
     }
 
@@ -302,7 +303,7 @@ public:
                 || (_slice.has_bound(statements::bound::END) && restriction::term_uses_function(_slice.bound(statements::bound::END), ks_name, function_name));
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const override {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
         return _slice.is_supported_by(_column_def, index);
     }
 
@@ -400,7 +401,7 @@ public:
         return false;
     }
 
-    virtual bool is_supported_by(const secondary_index::index& index) const {
+    virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const {
         return index.supports_expression(_column_def, cql3::operator_type::LIKE);
     }
 
@@ -485,7 +486,7 @@ public:
         }
 #endif
 
-        virtual bool is_supported_by(const secondary_index::index& index) const override {
+        virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
             bool supported = false;
             if (number_of_values() > 0) {
                 supported |= index.supports_expression(_column_def, cql3::operator_type::CONTAINS);
