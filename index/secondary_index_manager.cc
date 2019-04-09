@@ -72,6 +72,11 @@ const index_metadata& index::metadata() const {
     return _im;
 }
 
+index::score fulfills_restrictions(const cql3::restrictions::restrictions& restrictions) {
+    //FIXME(sarna): check all for the longest prefix and return its length as a score
+    return 0;
+}
+
 secondary_index_manager::secondary_index_manager(column_family& cf)
     : _cf{cf}
 {}
@@ -127,34 +132,11 @@ view_ptr secondary_index_manager::create_view_for_index(const index_metadata& im
         throw std::runtime_error(format("Unsupported index target type: {}", to_sstring(target_type)));
     }
 
-    // For local indexing, start with base partition key
-    if (im.local()) {
-        if (index_target->is_partition_key()) {
-            throw exceptions::invalid_request_exception("Local indexing based on partition key column is not allowed,"
-                    " since whole base partition key must be used in queries anyway. Use global indexing instead.");
-        }
-        for (auto& col : schema->partition_key_columns()) {
-            builder.with_column(col.name(), col.type, column_kind::partition_key);
-        }
-        builder.with_column(index_target->name(), index_target->type, column_kind::clustering_key, 0, column_view_virtual::no, index_target->get_computation_ptr());
-    } else {
-        builder.with_column(index_target->name(), index_target->type, column_kind::partition_key, 0, column_view_virtual::no, index_target->get_computation_ptr());
-        // Additional token column is added to ensure token order on secondary index queries
-        bytes token_column_name = get_available_token_column_name(*schema);
-        builder.with_computed_column(token_column_name, bytes_type, column_kind::clustering_key, std::make_unique<token_column_computation>());
-        for (auto& col : schema->partition_key_columns()) {
-            if (col == *index_target) {
-                continue;
-            }
-            builder.with_column(col.name(), col.type, column_kind::clustering_key);
-        }
+    for (const column_definition* cdef : target_info.pk_columns) {
+        builder.with_column(cdef->name(), cdef->type, column_kind::partition_key, 0, cdef->view_virtual(), cdef->get_computation_ptr());
     }
-
-    for (auto& col : schema->clustering_key_columns()) {
-        if (col == *index_target) {
-            continue;
-        }
-        builder.with_column(col.name(), col.type, column_kind::clustering_key);
+    for (const column_definition* cdef : target_info.ck_columns) {
+        builder.with_column(cdef->name(), cdef->type, column_kind::clustering_key, 0, cdef->view_virtual(), cdef->get_computation_ptr());
     }
     if (index_target->is_primary_key()) {
         for (auto& def : schema->regular_columns()) {

@@ -208,6 +208,8 @@ public:
     const secondary_index::target_info& get_target_info(const schema& schema) const;
     const column_definition* get_target_column(const schema& schema) const;
     static sstring get_default_index_name(const sstring& cf_name, std::optional<sstring> root);
+private:
+    void complement_target_info_with_base_keys(const schema& base_schema) const;
 };
 
 class column_definition final {

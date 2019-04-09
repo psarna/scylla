@@ -48,6 +48,10 @@
 #include <vector>
 #include <set>
 
+namespace cql3::restrictions {
+class restrictions;
+}
+
 namespace secondary_index {
 
 sstring index_table_name(const sstring& index_name);
@@ -56,6 +60,8 @@ class index {
     sstring _target_column;
     index_metadata _im;
 public:
+    using score = int;
+
     index(const sstring& target_column, const index_metadata& im);
     bool depends_on(const column_definition& cdef) const;
     bool supports_expression(const column_definition& cdef, const cql3::operator_type& op) const;
@@ -63,6 +69,8 @@ public:
     const sstring& target_column() const {
         return _target_column;
     }
+
+    score fulfills_restrictions(const cql3::restrictions::restrictions& restrictions);
 };
 
 class secondary_index_manager {

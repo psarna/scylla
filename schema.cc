@@ -492,9 +492,54 @@ bool index_metadata::local() const {
     return _local;
 }
 
+static bytes get_available_token_column_name(const schema& schema) {
+    bytes base_name = "idx_token";
+    bytes accepted_name = base_name;
+    int i = 0;
+    while (schema.get_column_definition(accepted_name)) {
+        accepted_name = base_name + to_bytes("_")+ to_bytes(std::to_string(++i));
+    }
+    return accepted_name;
+}
+
+/*
+ * Since we allow providing partial definitions through CQL with implicitly added base primary keys,
+ * this helper function will explicitly add omitted columns to target_info.
+ */
+void index_metadata::complement_target_info_with_base_keys(const schema& base_schema) const {
+    secondary_index::target_info& info(*_parsed_target);
+
+    auto not_present_in_index_pk = [&info] (const column_definition& col) {
+        return boost::range::find(info.pk_columns, &col) == info.pk_columns.end() && boost::range::find(info.ck_columns, &col) == info.ck_columns.end();
+    };
+
+    if (local()) {
+        for (auto& col : base_schema.partition_key_columns()) {
+            if (not_present_in_index_pk(col)) {
+                info.pk_columns.push_back(&col);
+            }
+        }
+    } else {
+        info.columns_placeholder.emplace_back(get_available_token_column_name(base_schema), bytes_type, column_kind::clustering_key);
+        info.ck_columns.push_back(&info.columns_placeholder.back());
+        for (auto& col : base_schema.partition_key_columns()) {
+            if (not_present_in_index_pk(col)) {
+                info.ck_columns.push_back(&col);
+            }
+        }
+    }
+
+    for (auto& col : base_schema.clustering_key_columns()) {
+        if (not_present_in_index_pk(col)) {
+            info.ck_columns.push_back(&col);
+        }
+    }
+}
+
 const secondary_index::target_info& index_metadata::get_target_info(const schema& schema) const {
     if (!_parsed_target) {
         _parsed_target = ::make_shared<secondary_index::target_info>(secondary_index::target_parser::parse(schema.shared_from_this(), *this));
+        complement_target_info_with_base_keys(schema);
     }
     return *_parsed_target;
 }

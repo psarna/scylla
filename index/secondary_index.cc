@@ -114,6 +114,10 @@ target_info target_parser::parse(schema_ptr schema, const sstring& target) {
         throw std::runtime_error(format("Not valid column description: {}", parsed_col.toStyledString()));
     };
 
+    //TODO(sarna): In case of old-style indexes, fill all remaining pk/ck from schema *here*, so secondary index manager doesn't need any redundant if statements. It just rewrites target_info into a view definition and that's it.
+    // Also, compute the token here, because why not.
+    // The whole logic will be moved here instead of SI manager.
+
     std::cmatch match;
     if (std::regex_match(target.data(), match, target_regex)) {
         info.type = index_target::from_sstring(match[1].str());

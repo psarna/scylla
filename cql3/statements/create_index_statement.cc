@@ -274,6 +274,15 @@ void create_index_statement::validate_targets_for_multi_column_index(std::vector
     }
     std::unordered_set<sstring> columns;
     for (auto& target : targets) {
+        auto* multiple_column_target = std::get_if<index_target::multiple_columns>(&(target->value));
+        if (multiple_column_target) {
+            for (auto identifier : *multiple_column_target) {
+                if (columns.count(identifier->to_string()) > 0) {
+                    throw exceptions::invalid_request_exception(format("Duplicate column {} in index target list", target->as_string()));
+                }
+                columns.emplace(identifier->to_string());
+            }
+        }
         if (columns.count(target->as_string()) > 0) {
             throw exceptions::invalid_request_exception(format("Duplicate column {} in index target list", target->as_string()));
         }
