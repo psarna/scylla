@@ -47,3 +47,22 @@ Their serialization is a string representing primary key in JSON. Examples:
   "ck": ["v"]
 }
 
+# Map value index
+
+Map value index is created on a single entry of a map.
+Example:
+CREATE TABLE mt(p int, c int, m map<int,text>, PRIMARY KEY(p,c));
+CREATE INDEX ON mt(m[7]);
+
+The index allows performing additional queries that restrict this particular map value, i.e.:
+SELECT * FROM mt WHERE m[7] = 'seven';
+
+In order to allow creating map value indexes, target definition is expanded to serve either a single column or a map extractor, which is a computed column.
+Serialization of a computed column is performed with JSON and requires two fields - map, which is the base column name, and key, which is its serialized key.
+Example output from system\_schema.indexes is as follows:
+
+ keyspace\_name | table\_name | index\_name     | kind       | options
+---------------+------------+----------------+------------+----------------------------------------------------------------------------------------
+        demodb |         mt | mt_m_entry_idx | COMPOSITES | {'target': '{"pk":[{"key":"\u0000\u0000\u0000\u0007","map":"m","type":"map_value"}]}'}
+
+Map value indexes can be both local and global, just like their regular counterparts.
