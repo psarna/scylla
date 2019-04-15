@@ -20,3 +20,9 @@ clause:
     WHERE ...
     ALLOW FILTERING          -- optional
     BYPASS CACHE
+
+## Map value indexing
+
+Map value indexing clause allows creating a secondary index on a collection entry
+rather than on a column. For more details, see docs/secondary\_index.md.
+
