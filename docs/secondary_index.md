@@ -47,3 +47,42 @@ Their serialization is a string representing primary key in JSON. Examples:
   "ck": ["v"]
 }
 
+# Map value index
+
+Map value index is created on a single entry of a map.
+Example:
+CREATE TABLE mt(p int, c int, m map<int,text>, PRIMARY KEY(p,c));
+CREATE INDEX ON mt(m[7]);
+
+The index allows performing additional queries that restrict this particular map value, i.e.:
+SELECT * FROM mt WHERE m[7] = 'seven';
+
+In order to allow creating map value indexes, target definition is expanded to serve either a single column or a map extractor, which is a computed column.
+Serialization of a computed column is performed with JSON and requires two fields - map, which is the base column name, and key, which is its serialized key.
+Example output from system\_schema.indexes is as follows:
+
+ keyspace\_name | table\_name | index\_name     | kind       | options
+---------------+------------+----------------+------------+----------------------------------------------------------------------------------------
+        demodb |         mt | mt\_m\_entry\_idx | COMPOSITES | {'target': '{"pk":[{"key":"\u0000\u0000\u0000\u0007","map":"m","type":"map\_value"}]}'}
+
+Map value indexes can be both local and global, just like their regular counterparts.
+
+# Index target serialization
+
+So far, index targets were always column names, so their serialization was simply storing the column name in a string.
+
+Index target serialization can also be based on JSON:
+{
+  "key": "\u0000\u0000\u0000\u0007",
+  "map": "m",
+  "type": "map\_value"
+}
+
+In the example above, the "key" field stores a binary blob representing the map key being indexed.
+The "map" field stores the name of the map column, and "type" indicates that this index is a map value index.
+
+In order to deserialize, the first thing to check is whether the index is represented as JSON.
+If it is, the mandatory "type" column should indicate the type of the index, which in turn
+implies which fields should also be present in the representation (e.g. for map value indexing, "map" and "key" are required).
+If the index target is not represented as a JSON document, it should be treated as if it was a single column name.
+
