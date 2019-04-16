@@ -564,8 +564,8 @@ public:
         bytes name;
         data_type type;
     };
+    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def) const;
 private:
-    ::shared_ptr<cql3::column_specification> make_column_specification(const column_definition& def);
     void rebuild();
     schema(const raw_schema&, std::optional<raw_view_info>);
 public:

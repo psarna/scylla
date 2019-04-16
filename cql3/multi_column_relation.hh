@@ -125,13 +125,16 @@ public:
         return _entities;
     }
 
-private:
     /**
      * For non-IN relations, returns the Tuples.Literal or Tuples.Raw marker for a single tuple.
      * @return a Tuples.Literal for non-IN relations or Tuples.Raw marker for a single tuple.
      */
     shared_ptr<term::multi_column_raw> get_value() {
         return _relation_type == operator_type::IN ? _in_marker : _values_or_marker;
+    }
+
+    const std::vector<shared_ptr<term::multi_column_raw>>& get_in_values() {
+        return _in_values;
     }
 public:
     virtual bool is_multi_column() const override { return true; }

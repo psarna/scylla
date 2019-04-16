@@ -59,6 +59,7 @@
 #include "db/consistency_level_validations.hh"
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
+#include "cql3/restrictions/v2/restrictions.hh"
 
 namespace cql3 {
 
@@ -1163,6 +1164,11 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
     auto selection = _select_clause.empty()
                      ? selection::selection::wildcard(schema)
                      : selection::selection::from_selectors(db, schema, _select_clause);
+
+    //FIXME(sarna): remove
+    auto prepared_restrictions = restrictions::v2::prepared_restrictions::prepare_restrictions(db, *schema, _where_clause, bound_names);
+    static logging::logger srn("SARNA");
+    srn.warn("PREPARED {}", prepared_restrictions._restrictions);
 
     auto restrictions = prepare_restrictions(db, schema, bound_names, selection, for_view, _parameters->allow_filtering());
 
