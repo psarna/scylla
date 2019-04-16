@@ -59,6 +59,8 @@
 #include "db/consistency_level_validations.hh"
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
+#include "cql3/restrictions/v2/restrictions.hh"
+    static logging::logger srn("SARNAsel");
 
 namespace cql3 {
 
@@ -132,7 +134,8 @@ select_statement::select_statement(schema_ptr schema,
                                    ordering_comparator_type ordering_comparator,
                                    ::shared_ptr<term> limit,
                                    ::shared_ptr<term> per_partition_limit,
-                                   cql_stats& stats)
+                                   cql_stats& stats,
+                                   restrictions::v2::prepared_restrictions&& prepared_restrictions)
     : cql_statement(select_timeout(*restrictions))
     , _schema(schema)
     , _bound_terms(bound_terms)
@@ -145,6 +148,7 @@ select_statement::select_statement(schema_ptr schema,
     , _per_partition_limit(std::move(per_partition_limit))
     , _ordering_comparator(std::move(ordering_comparator))
     , _stats(stats)
+    , _prepared_restrictions(std::move(prepared_restrictions))
 {
     _opts = _selection->get_query_options();
     _opts.set_if<query::partition_slice::option::bypass_cache>(_parameters->bypass_cache());
@@ -223,6 +227,7 @@ select_statement::make_partition_slice(const query_options& options)
     }
 
     auto bounds =_restrictions->get_clustering_bounds(options);
+    //TODO(sarna): use _prepared_restrictions here
     if (bounds.size() > 1) {
         auto comparer = position_in_partition::less_compare(*_schema);
         auto bounds_sorter = [&comparer] (const query::clustering_range& lhs, const query::clustering_range& rhs) {
@@ -303,7 +308,13 @@ select_statement::do_execute(service::storage_proxy& proxy,
     int32_t limit = get_limit(options);
     auto now = gc_clock::now();
 
+    srn.warn("Will compute filtering");
     const bool restrictions_need_filtering = _restrictions->need_filtering();
+    const bool restrictions_need_filtering2 = _prepared_restrictions.need_filtering();
+    srn.warn("Needs filtering: origin={} new={}", restrictions_need_filtering, restrictions_need_filtering2);
+    if (restrictions_need_filtering != restrictions_need_filtering2) {
+        throw std::runtime_error("FILTERING DOES NOT MATCH ORIGIN!");
+    }
     ++_stats.reads;
     _stats.filtered_reads += restrictions_need_filtering;
 
@@ -324,7 +335,10 @@ select_statement::do_execute(service::storage_proxy& proxy,
         page_size = DEFAULT_COUNT_PAGE_SIZE;
     }
 
+    srn.warn("Will print ranges");
     auto key_ranges = _restrictions->get_partition_key_ranges(options);
+    auto key_ranges2 = _prepared_restrictions.get_partition_key_ranges(options);
+    srn.warn("Ranges {}; Ranges2: {}", key_ranges, key_ranges2);
 
     if (!aggregate && !restrictions_need_filtering && (page_size <= 0
             || !service::pager::query_pagers::may_need_paging(*_schema, page_size,
@@ -701,8 +715,9 @@ primary_key_select_statement::primary_key_select_statement(schema_ptr schema, ui
                                                            ordering_comparator_type ordering_comparator,
                                                            ::shared_ptr<term> limit,
                                                            ::shared_ptr<term> per_partition_limit,
-                                                           cql_stats &stats)
-    : select_statement{schema, bound_terms, parameters, selection, restrictions, group_by_cell_indices, is_reversed, ordering_comparator, limit, per_partition_limit, stats}
+                                                           cql_stats &stats,
+                                                           restrictions::v2::prepared_restrictions&& prepared_restrictions)
+    : select_statement{schema, bound_terms, parameters, selection, restrictions, group_by_cell_indices, is_reversed, ordering_comparator, limit, per_partition_limit, stats, std::move(prepared_restrictions)}
 {}
 
 ::shared_ptr<cql3::statements::select_statement>
@@ -717,7 +732,8 @@ indexed_table_select_statement::prepare(database& db,
                                         ordering_comparator_type ordering_comparator,
                                         ::shared_ptr<term> limit,
                                          ::shared_ptr<term> per_partition_limit,
-                                         cql_stats &stats)
+                                         cql_stats &stats,
+                                         restrictions::v2::prepared_restrictions&& prepared_restrictions)
 {
     auto& sim = db.find_column_family(schema).get_index_manager();
     auto [index_opt, used_index_restrictions] = restrictions->find_idx(sim);
@@ -743,7 +759,8 @@ indexed_table_select_statement::prepare(database& db,
             stats,
             *index_opt,
             std::move(used_index_restrictions),
-            view_schema);
+            view_schema,
+            std::move(prepared_restrictions));
 
 }
 
@@ -759,8 +776,9 @@ indexed_table_select_statement::indexed_table_select_statement(schema_ptr schema
                                                            cql_stats &stats,
                                                            const secondary_index::index& index,
                                                            ::shared_ptr<restrictions::restrictions> used_index_restrictions,
-                                                           schema_ptr view_schema)
-    : select_statement{schema, bound_terms, parameters, selection, restrictions, group_by_cell_indices, is_reversed, ordering_comparator, limit, per_partition_limit, stats}
+                                                           schema_ptr view_schema,
+                                                           restrictions::v2::prepared_restrictions&& prepared_restrictions)
+    : select_statement{schema, bound_terms, parameters, selection, restrictions, group_by_cell_indices, is_reversed, ordering_comparator, limit, per_partition_limit, stats, std::move(prepared_restrictions)}
     , _index{index}
     , _used_index_restrictions(used_index_restrictions)
     , _view_schema(view_schema)
@@ -1246,10 +1264,27 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
                      ? selection::selection::wildcard(schema)
                      : selection::selection::from_selectors(db, schema, _select_clause);
 
+    static logging::logger srn("SARNA");
+
+    auto prepared_restrictions = restrictions::v2::prepared_restrictions::prepare_restrictions(db, schema, _where_clause, bound_names);
+    srn.warn("PREPARED {}", prepared_restrictions._restrictions);
+
     auto restrictions = prepare_restrictions(db, schema, bound_names, selection, for_view, _parameters->allow_filtering());
 
+    srn.warn("for_view={}", for_view);
+    srn.warn("USES INDEXING: orig={}, new={}", restrictions->uses_secondary_indexing(), prepared_restrictions.uses_indexing());
+    srn.warn("IS KEY RANGE: orig={}, new={}", restrictions->is_key_range(), prepared_restrictions.is_key_range());
+
+    //FIXME(sarna): for_view messes things up anyway and should be purged
+    if (!for_view && restrictions->uses_secondary_indexing() != prepared_restrictions.uses_indexing()) {
+        throw std::runtime_error("si DOESN'T MATCH ORIGIN");
+    }
+    if (!for_view && restrictions->is_key_range() != prepared_restrictions.is_key_range()) {
+        throw std::runtime_error("kr DOESN'T MATCH ORIGIN");
+    }
+
     if (_parameters->is_distinct()) {
-        validate_distinct_selection(schema, selection, restrictions);
+        validate_distinct_selection(schema, selection, prepared_restrictions);
     }
 
     select_statement::ordering_comparator_type ordering_comparator;
@@ -1257,17 +1292,17 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
 
     if (!_parameters->orderings().empty()) {
         assert(!for_view);
-        verify_ordering_is_allowed(restrictions);
-        ordering_comparator = get_ordering_comparator(schema, selection, restrictions);
+        verify_ordering_is_allowed(prepared_restrictions);
+        ordering_comparator = get_ordering_comparator(schema, selection, prepared_restrictions);
         is_reversed_ = is_reversed(schema);
     }
 
-    check_needs_filtering(restrictions);
-    ensure_filtering_columns_retrieval(db, selection, restrictions);
+    check_needs_filtering(prepared_restrictions);
+    ensure_filtering_columns_retrieval(db, selection, prepared_restrictions);
     auto group_by_cell_indices = ::make_shared<std::vector<size_t>>(prepare_group_by(schema, *selection));
 
     ::shared_ptr<cql3::statements::select_statement> stmt;
-    if (restrictions->uses_secondary_indexing()) {
+    if (prepared_restrictions.uses_indexing()) {
         stmt = indexed_table_select_statement::prepare(
                 db,
                 schema,
@@ -1280,7 +1315,8 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
                 std::move(ordering_comparator),
                 prepare_limit(db, bound_names, _limit),
                 prepare_limit(db, bound_names, _per_partition_limit),
-                stats);
+                stats,
+                std::move(prepared_restrictions));
     } else {
         stmt = ::make_shared<cql3::statements::primary_key_select_statement>(
                 schema,
@@ -1293,7 +1329,8 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
                 std::move(ordering_comparator),
                 prepare_limit(db, bound_names, _limit),
                 prepare_limit(db, bound_names, _per_partition_limit),
-                stats);
+                stats,
+                std::move(prepared_restrictions));
     }
 
     auto partition_key_bind_indices = bound_names->get_partition_key_bind_indexes(schema);
@@ -1333,21 +1370,21 @@ select_statement::prepare_limit(database& db, ::shared_ptr<variable_specificatio
     return prep_limit;
 }
 
-void select_statement::verify_ordering_is_allowed(::shared_ptr<restrictions::statement_restrictions> restrictions)
+void select_statement::verify_ordering_is_allowed(const restrictions::v2::prepared_restrictions& restrictions)
 {
-    if (restrictions->uses_secondary_indexing()) {
+    if (restrictions.uses_indexing()) {
         throw exceptions::invalid_request_exception("ORDER BY with 2ndary indexes is not supported.");
     }
-    if (restrictions->is_key_range()) {
+    if (restrictions.is_key_range()) {
         throw exceptions::invalid_request_exception("ORDER BY is only supported when the partition key is restricted by an EQ or an IN.");
     }
 }
 
 void select_statement::validate_distinct_selection(schema_ptr schema,
                                                    ::shared_ptr<selection::selection> selection,
-                                                   ::shared_ptr<restrictions::statement_restrictions> restrictions)
+                                                   const restrictions::v2::prepared_restrictions& restrictions)
 {
-    if (restrictions->has_non_primary_key_restriction() || restrictions->has_clustering_columns_restriction()) {
+    if (restrictions.has_regular_column_restrictions() || restrictions.has_ck_restrictions()) {
         throw exceptions::invalid_request_exception(
             "SELECT DISTINCT with WHERE clause only supports restriction by partition key.");
     }
@@ -1360,7 +1397,7 @@ void select_statement::validate_distinct_selection(schema_ptr schema,
 
     // If it's a key range, we require that all partition key columns are selected so we don't have to bother
     // with post-query grouping.
-    if (!restrictions->is_key_range()) {
+    if (!restrictions.is_key_range()) {
         return;
     }
 
@@ -1382,9 +1419,9 @@ void select_statement::handle_unrecognized_ordering_column(::shared_ptr<column_i
 select_statement::ordering_comparator_type
 select_statement::get_ordering_comparator(schema_ptr schema,
                                           ::shared_ptr<selection::selection> selection,
-                                          ::shared_ptr<restrictions::statement_restrictions> restrictions)
+                                           const restrictions::v2::prepared_restrictions& restrictions)
 {
-    if (!restrictions->key_is_in_relation()) {
+    if (!restrictions.key_is_in_relation()) {
         return {};
     }
 
@@ -1473,16 +1510,16 @@ bool select_statement::is_reversed(schema_ptr schema) {
 }
 
 /** If ALLOW FILTERING was not specified, this verifies that it is not needed */
-void select_statement::check_needs_filtering(::shared_ptr<restrictions::statement_restrictions> restrictions)
+void select_statement::check_needs_filtering(const restrictions::v2::prepared_restrictions& restrictions)
 {
     // non-key-range non-indexed queries cannot involve filtering underneath
-    if (!_parameters->allow_filtering() && (restrictions->is_key_range() || restrictions->uses_secondary_indexing())) {
+    if (!_parameters->allow_filtering() && (restrictions.is_key_range() || restrictions.uses_indexing())) {
         // We will potentially filter data if either:
         //  - Have more than one IndexExpression
         //  - Have no index expression and the column filter is not the identity
-        if (restrictions->need_filtering()) {
+        if (restrictions.need_filtering()) {
             throw exceptions::invalid_request_exception(
-                "Cannot execute this query as it might involve data filtering and "
+                "v2: Cannot execute this query as it might involve data filtering and "
                     "thus may have unpredictable performance. If you want to execute "
                     "this query despite the performance unpredictability, use ALLOW FILTERING");
         }
@@ -1498,8 +1535,8 @@ void select_statement::check_needs_filtering(::shared_ptr<restrictions::statemen
  */
 void select_statement::ensure_filtering_columns_retrieval(database& db,
                                         ::shared_ptr<selection::selection> selection,
-                                        ::shared_ptr<restrictions::statement_restrictions> restrictions) {
-    for (auto&& cdef : restrictions->get_column_defs_for_filtering(db)) {
+                                         const restrictions::v2::prepared_restrictions& restrictions) {
+    for (auto&& cdef : restrictions._filtered_columns) {
         if (!selection->has_column(*cdef)) {
             selection->add_column_for_post_processing(*cdef);
         }

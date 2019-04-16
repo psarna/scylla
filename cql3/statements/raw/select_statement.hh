@@ -53,6 +53,7 @@
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/distributed.hh>
 #include "validation.hh"
+#include "cql3/restrictions/v2/restrictions.hh"
 
 namespace cql3 {
 
@@ -131,26 +132,26 @@ private:
     /** Returns a ::shared_ptr<term> for the limit or null if no limit is set */
     ::shared_ptr<term> prepare_limit(database& db, ::shared_ptr<variable_specifications> bound_names, ::shared_ptr<term::raw> limit);
 
-    static void verify_ordering_is_allowed(::shared_ptr<restrictions::statement_restrictions> restrictions);
+    static void verify_ordering_is_allowed(const restrictions::v2::prepared_restrictions& restrictions);
 
     static void validate_distinct_selection(schema_ptr schema,
         ::shared_ptr<selection::selection> selection,
-        ::shared_ptr<restrictions::statement_restrictions> restrictions);
+         const restrictions::v2::prepared_restrictions& restrictions);
 
     void handle_unrecognized_ordering_column(::shared_ptr<column_identifier> column);
 
     select_statement::ordering_comparator_type get_ordering_comparator(schema_ptr schema,
         ::shared_ptr<selection::selection> selection,
-        ::shared_ptr<restrictions::statement_restrictions> restrictions);
+         const restrictions::v2::prepared_restrictions& restrictions);
 
     bool is_reversed(schema_ptr schema);
 
     /** If ALLOW FILTERING was not specified, this verifies that it is not needed */
-    void check_needs_filtering(::shared_ptr<restrictions::statement_restrictions> restrictions);
+    void check_needs_filtering(const restrictions::v2::prepared_restrictions& restrictions);
 
     void ensure_filtering_columns_retrieval(database& db,
                                             ::shared_ptr<selection::selection> selection,
-                                            ::shared_ptr<restrictions::statement_restrictions> restrictions);
+                                             const restrictions::v2::prepared_restrictions& restrictions);
 
     /// Returns indices of GROUP BY cells in fetched rows.
     std::vector<size_t> prepare_group_by(schema_ptr schema, selection::selection& selection) const;

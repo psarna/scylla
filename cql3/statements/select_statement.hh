@@ -54,6 +54,7 @@
 #include <seastar/core/distributed.hh>
 #include "validation.hh"
 #include "transport/messages/result_message.hh"
+#include "cql3/restrictions/v2/restrictions.hh"
 
 namespace cql3 {
 
@@ -93,6 +94,7 @@ protected:
 
     query::partition_slice::option_set _opts;
     cql_stats& _stats;
+    restrictions::v2::prepared_restrictions _prepared_restrictions;
 protected :
     virtual future<::shared_ptr<cql_transport::messages::result_message>> do_execute(service::storage_proxy& proxy,
         service::query_state& state, const query_options& options);
@@ -108,7 +110,8 @@ public:
             ordering_comparator_type ordering_comparator,
             ::shared_ptr<term> limit,
             ::shared_ptr<term> per_partition_limit,
-            cql_stats& stats);
+            cql_stats& stats,
+            restrictions::v2::prepared_restrictions&& prepared_restrictions);
 
     virtual bool uses_function(const sstring& ks_name, const sstring& function_name) const override;
 
@@ -170,7 +173,8 @@ public:
                      ordering_comparator_type ordering_comparator,
                      ::shared_ptr<term> limit,
                      ::shared_ptr<term> per_partition_limit,
-                     cql_stats &stats);
+                     cql_stats &stats,
+                     restrictions::v2::prepared_restrictions&& prepared_restrictions);
 };
 
 class indexed_table_select_statement : public select_statement {
@@ -191,7 +195,8 @@ public:
                                                                     ordering_comparator_type ordering_comparator,
                                                                     ::shared_ptr<term> limit,
                                                                      ::shared_ptr<term> per_partition_limit,
-                                                                    cql_stats &stats);
+                                                                    cql_stats &stats,
+                                                                    restrictions::v2::prepared_restrictions&& prepared_restrictions);
 
     indexed_table_select_statement(schema_ptr schema,
                                    uint32_t bound_terms,
@@ -206,7 +211,8 @@ public:
                                    cql_stats &stats,
                                    const secondary_index::index& index,
                                    ::shared_ptr<restrictions::restrictions> used_index_restrictions,
-                                   schema_ptr view_schema);
+                                   schema_ptr view_schema,
+                                   restrictions::v2::prepared_restrictions&& prepared_restrictions);
 
 private:
     virtual future<::shared_ptr<cql_transport::messages::result_message>> do_execute(service::storage_proxy& proxy,

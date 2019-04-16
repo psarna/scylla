@@ -3118,31 +3118,31 @@ SEASTAR_TEST_CASE(test_allow_filtering_contains) {
         auto my_set_type = set_type_impl::get_instance(int32_type, false);
         auto my_map_type = map_type_impl::get_instance(utf8_type, utf8_type, false);
         auto my_nonfrozen_map_type = map_type_impl::get_instance(utf8_type, utf8_type, true);
-
+        BOOST_TEST_PASSPOINT();
         auto msg = e.execute_cql("SELECT p FROM t WHERE p CONTAINS KEY 'a' ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_map_type->decompose(make_map_value(my_map_type, map_type_impl::native_type({{sstring("a"), sstring("a")}})))}
         });
-
+BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c1 FROM t WHERE c1 CONTAINS 3 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{1, 2, 3}})))},
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{2, 3, 4}})))},
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{3, 4, 5}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c2 FROM t WHERE c2 CONTAINS 1 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_set_type->decompose(make_set_value(my_set_type, set_type_impl::native_type({{1, 5}})))},
             {my_set_type->decompose(make_set_value(my_set_type, set_type_impl::native_type({{1, 2, 3}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT v FROM t WHERE v CONTAINS KEY 'y1' ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_nonfrozen_map_type->decompose(make_map_value(my_nonfrozen_map_type, map_type_impl::native_type({{sstring("x"), sstring("xyz")}, {sstring("y1"), sstring("abc")}})))},
             {my_nonfrozen_map_type->decompose(make_map_value(my_nonfrozen_map_type, map_type_impl::native_type({{sstring("d"), sstring("def")}, {sstring("y1"), sstring("abc")}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c2, v FROM t WHERE v CONTAINS KEY 'y1' AND c2 CONTAINS 5 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {
