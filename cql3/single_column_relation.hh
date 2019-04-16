@@ -116,6 +116,10 @@ public:
         return _value;
     }
 
+    const std::vector<::shared_ptr<term::raw>>& get_in_values() {
+        return _in_values;
+    }
+
 protected:
     virtual ::shared_ptr<term> to_term(const std::vector<::shared_ptr<column_specification>>& receivers,
                           ::shared_ptr<term::raw> raw, database& db, const sstring& keyspace,

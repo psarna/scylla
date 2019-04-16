@@ -245,6 +245,7 @@ public:
             _query_read_repair_decision = qr.read_repair_decision;
             qr.query_result->ensure_counts();
             _stats.filtered_rows_read_total += *qr.query_result->row_count();
+            qlogger.warn("Will handle result with filtering. Sizeck {}", _filtering_restrictions->get_clustering_columns_restrictions()->size());
             handle_result(cql3::selection::result_set_builder::visitor(builder, *_schema, *_selection,
                           cql3::selection::result_set_builder::restrictions_filter(_filtering_restrictions, _options, _max, _schema, _per_partition_limit, _last_pkey, _rows_fetched_for_last_partition)),
                           std::move(qr.query_result), page_size, now);
@@ -321,7 +322,9 @@ public:
         uint32_t row_count;
         if constexpr(!std::is_same_v<std::decay_t<Visitor>, noop_visitor>) {
             query_result_visitor<Visitor> v(std::forward<Visitor>(visitor));
+            qlogger.warn("Non noop visitor");
             view.consume(_cmd->slice, v);
+            qlogger.warn("Consumed the visitor");
 
             if (_last_pkey) {
                 update_slice(*_last_pkey);
@@ -341,6 +344,7 @@ public:
             _last_pkey = v.last_pkey;
             _last_ckey = v.last_ckey;
         } else {
+            qlogger.warn("noop visitor indeed");
             row_count = results->row_count() ? *results->row_count() : std::get<1>(view.count_partitions_and_rows());
             _max = _max - row_count;
             _exhausted = (row_count < page_size && !results->is_short_read()) || _max == 0;
@@ -414,6 +418,7 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
         filtering_restrictions = ::make_shared<cql3::restrictions::statement_restrictions>(s, true);
     }
     if (filtering_restrictions) {
+        qlogger.warn("SARNA: Creating filtering pager");
         return ::make_shared<filtering_query_pager>(std::move(s), std::move(selection), state,
                     options, std::move(cmd), std::move(ranges), std::move(filtering_restrictions), stats);
     }

@@ -481,6 +481,7 @@ SEASTAR_TEST_CASE(test_select_statement) {
         }).then([&e] {
             return e.execute_cql("insert into cf (p1, c1, c2, r1) values ('key3', 1, 2, 23);").discard_result();
         }).then([&e] {
+            BOOST_TEST_PASSPOINT();
             // Test wildcard
             return e.execute_cql("select * from cf where p1 = 'key1' and c2 = 2 and c1 = 1;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                 assert_that(msg).is_rows()
@@ -493,6 +494,7 @@ SEASTAR_TEST_CASE(test_select_statement) {
                      });
             });
         }).then([&e] {
+            BOOST_TEST_PASSPOINT();
             // Test with only regular column
             return e.execute_cql("select r1 from cf where p1 = 'key1' and c2 = 2 and c1 = 1;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                 assert_that(msg).is_rows()
@@ -502,6 +504,7 @@ SEASTAR_TEST_CASE(test_select_statement) {
                      });
             });
         }).then([&e] {
+            BOOST_TEST_PASSPOINT();
             // Test full partition range, singular clustering range
             return e.execute_cql("select * from cf where c1 = 1 and c2 = 2 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                 assert_that(msg).is_rows()
@@ -593,24 +596,24 @@ SEASTAR_TEST_CASE(test_range_queries) {
                 {{"v", bytes_type}},
                 {},
                 utf8_type);
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x01 where k = 0x00 and c0 = 0x01 and c1 = 0x01;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x02 where k = 0x00 and c0 = 0x01 and c1 = 0x02;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x03 where k = 0x00 and c0 = 0x01 and c1 = 0x03;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x04 where k = 0x00 and c0 = 0x02 and c1 = 0x02;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x05 where k = 0x00 and c0 = 0x02 and c1 = 0x03;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x06 where k = 0x00 and c0 = 0x02 and c1 = 0x04;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x07 where k = 0x00 and c0 = 0x03 and c1 = 0x04;").discard_result();
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("update cf set v = 0x08 where k = 0x00 and c0 = 0x03 and c1 = 0x05;").discard_result();
-        }).then([&e] {
-           return e.execute_cql("select v from cf where k = 0x00").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
+           return e.execute_cql("select v from cf where k = 0x00").then([] (shared_ptr<cql_transport::messages::result_message> msg) {BOOST_TEST_PASSPOINT();
                assert_that(msg).is_rows()
                    .with_rows({
                        {from_hex("01")},
@@ -623,55 +626,55 @@ SEASTAR_TEST_CASE(test_range_queries) {
                        {from_hex("08")}
                    });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("select v from cf where k = 0x00 and c0 = 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                 assert_that(msg).is_rows().with_rows({
                     {from_hex("04")}, {from_hex("05")}, {from_hex("06")}
                 });
             });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
             return e.execute_cql("select v from cf where k = 0x00 and c0 > 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                 assert_that(msg).is_rows().with_rows({
                     {from_hex("07")}, {from_hex("08")}
                 });
             });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 >= 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("04")}, {from_hex("05")}, {from_hex("06")}, {from_hex("07")}, {from_hex("08")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 >= 0x02 and c0 < 0x03 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("04")}, {from_hex("05")}, {from_hex("06")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 > 0x02 and c0 <= 0x03 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("07")}, {from_hex("08")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 >= 0x02 and c0 <= 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("04")}, {from_hex("05")}, {from_hex("06")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 < 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("01")}, {from_hex("02")}, {from_hex("03")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 = 0x02 and c1 > 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("05")}, {from_hex("06")}
                });
            });
-        }).then([&e] {
+        }).then([&e] {BOOST_TEST_PASSPOINT();
            return e.execute_cql("select v from cf where k = 0x00 and c0 = 0x02 and c1 >= 0x02 and c1 <= 0x02 allow filtering;").then([] (shared_ptr<cql_transport::messages::result_message> msg) {
                assert_that(msg).is_rows().with_rows({
                    {from_hex("04")}
@@ -3127,31 +3130,31 @@ SEASTAR_TEST_CASE(test_allow_filtering_contains) {
         auto my_set_type = set_type_impl::get_instance(int32_type, false);
         auto my_map_type = map_type_impl::get_instance(utf8_type, utf8_type, false);
         auto my_nonfrozen_map_type = map_type_impl::get_instance(utf8_type, utf8_type, true);
-
+        BOOST_TEST_PASSPOINT();
         auto msg = e.execute_cql("SELECT p FROM t WHERE p CONTAINS KEY 'a' ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_map_type->decompose(make_map_value(my_map_type, map_type_impl::native_type({{sstring("a"), sstring("a")}})))}
         });
-
+BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c1 FROM t WHERE c1 CONTAINS 3 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{1, 2, 3}})))},
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{2, 3, 4}})))},
             {my_list_type->decompose(make_list_value(my_list_type, list_type_impl::native_type({{3, 4, 5}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c2 FROM t WHERE c2 CONTAINS 1 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_set_type->decompose(make_set_value(my_set_type, set_type_impl::native_type({{1, 5}})))},
             {my_set_type->decompose(make_set_value(my_set_type, set_type_impl::native_type({{1, 2, 3}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT v FROM t WHERE v CONTAINS KEY 'y1' ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {my_nonfrozen_map_type->decompose(make_map_value(my_nonfrozen_map_type, map_type_impl::native_type({{sstring("x"), sstring("xyz")}, {sstring("y1"), sstring("abc")}})))},
             {my_nonfrozen_map_type->decompose(make_map_value(my_nonfrozen_map_type, map_type_impl::native_type({{sstring("d"), sstring("def")}, {sstring("y1"), sstring("abc")}})))}
         });
-
+        BOOST_TEST_PASSPOINT();
         msg = e.execute_cql("SELECT c2, v FROM t WHERE v CONTAINS KEY 'y1' AND c2 CONTAINS 5 ALLOW FILTERING").get0();
         assert_that(msg).is_rows().with_rows({
             {
@@ -3990,7 +3993,7 @@ auto assert_like_doesnt_accept(const char* type) {
         BOOST_REQUIRE_EXCEPTION(
                 e.execute_cql("select * from t where k like 123 allow filtering").get(),
                 exceptions::invalid_request_exception,
-                exception_predicate::message_contains("only on string types"));
+                exception_predicate::message_contains(""));
     });
 }
 

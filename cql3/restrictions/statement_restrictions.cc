@@ -426,10 +426,13 @@ void statement_restrictions::process_partition_key_restrictions(bool has_queriab
     // - Is it queriable without 2ndary index, which is always more efficient
     // If a component of the partition key is restricted by a relation, all preceding
     // components must have a EQ. Only the last partition key component can be in IN relation.
+    static logging::logger srn("SARNAstat");
     if (_partition_key_restrictions->is_on_token()) {
         _is_key_range = true;
+        srn.warn("c1 {}", has_queriable_index);
     } else if (_partition_key_restrictions->has_unrestricted_components(*_schema)) {
         _is_key_range = true;
+        srn.warn("c2 {}", has_queriable_index);
         _uses_secondary_indexing = has_queriable_index;
     }
 
@@ -440,6 +443,7 @@ void statement_restrictions::process_partition_key_restrictions(bool has_queriab
                 "this query despite the performance unpredictability, use ALLOW FILTERING");
         }
         _is_key_range = true;
+        srn.warn("c3 {}", has_queriable_index);
         _uses_secondary_indexing = has_queriable_index;
     }
 

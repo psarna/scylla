@@ -51,6 +51,7 @@
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/range/adaptor/filtered.hpp>
 #include <boost/range/adaptor/map.hpp>
+        extern logging::logger dblog;
 
 namespace cql3 {
 
