@@ -152,6 +152,10 @@ public:
     { }
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>> execute_cql(const sstring& text) override {
+        static logging::logger srn("SARNATEST");
+        if (text.size() < 256) {
+            srn.warn("{}", text);
+        }
         auto qs = make_query_state();
         return local_qp().process(text, *qs, cql3::query_options::DEFAULT).finally([qs, this] {
             _core_local.local().client_state.merge(qs->get_client_state());
@@ -170,6 +174,10 @@ public:
     }
 
     virtual future<cql3::prepared_cache_key_type> prepare(sstring query) override {
+        static logging::logger srn("SARNATEST2");
+        if (query.size() < 256) {
+            srn.warn("PREPARING {}", query);
+        }
         return qp().invoke_on_all([query, this] (auto& local_qp) {
             auto qs = this->make_query_state();
             return local_qp.prepare(query, *qs).finally([qs] {}).discard_result();

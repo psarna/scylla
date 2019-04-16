@@ -58,11 +58,10 @@ private:
         ::shared_ptr<term> t;
     };
     bound _bounds[2];
-private:
+public:
     term_slice(::shared_ptr<term> start, bool include_start, ::shared_ptr<term> end, bool include_end)
         : _bounds{{include_start, std::move(start)}, {include_end, std::move(end)}}
     { }
-public:
     static term_slice new_instance(statements::bound bound, bool include, ::shared_ptr<term> term) {
         if (is_start(bound)) {
             return term_slice(std::move(term), include, {}, false);

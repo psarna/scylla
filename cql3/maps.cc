@@ -208,6 +208,7 @@ maps::value::equals(map_type mt, const value& v) {
 sstring
 maps::value::to_string() const {
     // FIXME:
+    return "FIXME(sarna): map value here";
     abort();
 }
 
