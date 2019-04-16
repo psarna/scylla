@@ -122,6 +122,14 @@ public:
 
     sstring to_string() const override;
 
+    ::shared_ptr<term::raw> get_value() const {
+        return _value;
+    }
+
+    const std::vector<shared_ptr<column_identifier::raw>>& get_entities() const {
+        return _entities;
+    }
+
 protected:
     ::shared_ptr<term> to_term(const std::vector<::shared_ptr<column_specification>>& receivers,
                                        ::shared_ptr<term::raw> raw,
