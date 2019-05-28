@@ -119,7 +119,6 @@ class resource_manager {
     const size_t _min_send_hint_budget;
     seastar::semaphore _send_limiter;
 
-    uint64_t _size_of_hints_in_progress = 0;
     space_watchdog::shard_managers_set _shard_managers;
     space_watchdog::per_device_limits_map _per_device_limits_map;
     space_watchdog _space_watchdog;
@@ -142,22 +141,6 @@ public:
     resource_manager& operator=(resource_manager&&) = delete;
 
     future<semaphore_units<semaphore_default_exception_factory>> get_send_units_for(size_t buf_size);
-
-    bool too_many_hints_in_progress() const {
-        return _size_of_hints_in_progress > max_size_of_hints_in_progress;
-    }
-
-    uint64_t size_of_hints_in_progress() const {
-        return _size_of_hints_in_progress;
-    }
-
-    inline void inc_size_of_hints_in_progress(int64_t delta) {
-        _size_of_hints_in_progress += delta;
-    }
-
-    inline void dec_size_of_hints_in_progress(int64_t delta) {
-        _size_of_hints_in_progress -= delta;
-    }
 
     future<> start(shared_ptr<service::storage_proxy> proxy_ptr, shared_ptr<gms::gossiper> gossiper_ptr, shared_ptr<service::storage_service> ss_ptr);
     void allow_replaying() noexcept;
