@@ -98,27 +98,27 @@ SEASTAR_TEST_CASE(test_select_json_types) {
         assert_that(msg).is_rows().with_rows({
             {
                 utf8_type->decompose(
-                    "{\"a\": \"ascii\", "
-                    "\"b\": 123456789, "
-                    "\"c\": \"0xdeadbeef\", "
-                    "\"d\": true, "
-                    "\"e\": 3.14, "
-                    "\"f\": 3.14, "
-                    "\"\\\"G\\\"\": \"127.0.0.1\", " // note the double quoting on case-sensitive column names
-                    "\"\\\"H\\\"\": 3, "
-                    "\"\\\"I\\\"\": \"zażółć gęślą jaźń\", "
-                    "\"j\": \"2001-10-18T14:15:55.134000\", "
-                    "\"k\": \"d2177dd0-eaa2-11de-a572-001b779c76e3\", "
-                    "\"l\": \"d2177dd0-eaa2-11de-a572-001b779c76e3\", "
-                    "\"m\": \"varchar\", "
-                    "\"n\": 123, "
-                    "\"o\": 1.23, "
-                    "\"p\": 3, "
-                    "\"q\": 3, "
-                    "\"r\": \"1970-01-02\", "
-                    "\"s\": 00:00:00.000000001, "
-                    "\"u\": \"1y2mo25d5h6m7s8ms9us10ns\", "
-                    "\"w\": null, "
+                    "{\"a\":\"ascii\","
+                    "\"b\":123456789,"
+                    "\"c\":\"0xdeadbeef\","
+                    "\"d\":true,"
+                    "\"e\":3.14,"
+                    "\"f\":3.14,"
+                    "\"\\\"G\\\"\":\"127.0.0.1\"," // note the double quoting on case-sensitive column names
+                    "\"\\\"H\\\"\":3,"
+                    "\"\\\"I\\\"\":\"zażółć gęślą jaźń\","
+                    "\"j\":\"2001-10-18T14:15:55.134000\","
+                    "\"k\":\"d2177dd0-eaa2-11de-a572-001b779c76e3\","
+                    "\"l\":\"d2177dd0-eaa2-11de-a572-001b779c76e3\","
+                    "\"m\":\"varchar\","
+                    "\"n\":123,"
+                    "\"o\":1.23,"
+                    "\"p\":3,"
+                    "\"q\":3,"
+                    "\"r\":\"1970-01-02\","
+                    "\"s\":00:00:00.000000001,"
+                    "\"u\":\"1y2mo25d5h6m7s8ms9us10ns\","
+                    "\"w\":null,"
                     "\"unixtimestampof(k)\": 1261009589805}"
                 )
             }
@@ -174,7 +174,7 @@ SEASTAR_TEST_CASE(test_select_json_collections) {
             "INSERT INTO collections (a, b, c, d) VALUES ("
                 "    'key',"
                 "    { 1 : 'abc', 3 : 'de', 2 : '!' },"
-                "    { 0.0, 4.5, 2.25, 1.125, NAN, INFINITY },"
+                "    { 0, 4.5, 2.25, 1.125, NAN, INFINITY },"
                 "    [[ 3 , 1, 4, 1, 5, 9 ], [ ], [ 1, 1, 2 ]]"
                 ");").get();
 
@@ -182,10 +182,10 @@ SEASTAR_TEST_CASE(test_select_json_collections) {
         assert_that(msg).is_rows().with_rows({
             {
                 utf8_type->decompose(
-                    "{\"a\": \"key\", "
-                    "\"b\": {\"1\": \"abc\", \"2\": \"!\", \"3\": \"de\"}, "
-                    "\"c\": [0, 1.125, 2.25, 4.5, null, null], " // note - one null is for NAN, one for INFINITY
-                    "\"d\": [[3, 1, 4, 1, 5, 9], [], [1, 1, 2]]}"
+                    "{\"a\":\"key\","
+                    "\"b\":{\"1\":\"abc\",\"2\":\"!\",\"3\":\"de\"},"
+                    "\"c\":[0,1.125,2.25,4.5,null,null]," // note - one null is for NAN, one for INFINITY
+                    "\"d\":[[3,1,4,1,5,9],[],[1,1,2]]}"
                 )
             }
          });
@@ -194,9 +194,9 @@ SEASTAR_TEST_CASE(test_select_json_collections) {
         assert_that(msg).is_rows().with_rows({
             {
                 utf8_type->decompose("\"key\""),
-                utf8_type->decompose("{\"1\": \"abc\", \"2\": \"!\", \"3\": \"de\"}"),
-                utf8_type->decompose("[0, 1.125, 2.25, 4.5, null, null]"),
-                utf8_type->decompose("[[3, 1, 4, 1, 5, 9], [], [1, 1, 2]]"),
+                utf8_type->decompose("{\"1\":\"abc\",\"2\":\"!\",\"3\":\"de\"}"),
+                utf8_type->decompose("[0,1.125,2.25,4.5,null,null]"),
+                utf8_type->decompose("[[3,1,4,1,5,9],[],[1,1,2]]"),
             }
          });
 
@@ -358,10 +358,10 @@ SEASTAR_TEST_CASE(test_insert_json_collections) {
         assert_that(msg).is_rows().with_rows({
             {
                 utf8_type->decompose(
-                    "{\"a\": \"key\", "
-                    "\"b\": {\"1\": \"abc\", \"2\": \"!\", \"3\": \"de\"}, "
-                    "\"c\": [0, 1.125, 2.25, 4.5], "
-                    "\"d\": [[3, 1, 4, 1, 5, 9], [], [1, 1, 2]]}"
+                    "{\"a\":\"key\","
+                    "\"b\":{\"1\":\"abc\",\"2\":\"!\",\"3\":\"de\"},"
+                    "\"c\":[0.0,1.125,2.25,4.5],"
+                    "\"d\":[[3,1,4,1,5,9],[],[1,1,2]]}"
                 )
             }
          });
@@ -371,10 +371,10 @@ SEASTAR_TEST_CASE(test_insert_json_collections) {
         assert_that(msg).is_rows().with_rows({
             {
                 utf8_type->decompose(
-                    "{\"a\": \"key2\", "
-                    "\"b\": null, "
-                    "\"c\": null, "
-                    "\"d\": null}"
+                    "{\"a\":\"key2\","
+                    "\"b\":null,"
+                    "\"c\":null,"
+                    "\"d\":null}"
                 )
             }
          });
@@ -416,22 +416,22 @@ SEASTAR_TEST_CASE(test_prepared_json) {
         auto msg = e.execute_cql("select json * from json_data where a='a1'").get0();
         assert_that(msg).is_rows().with_rows({{
                 utf8_type->decompose(
-                    "{\"a\": \"a1\", \"b\": {\"0\": \"zero\", \"3\": \"three\", \"6\": \"six\"}, \"c\": 1.23, \"d\": [1.25, 3.75, 2.5]}")
+                    "{\"a\":\"a1\",\"b\":{\"0\":\"zero\",\"3\":\"three\",\"6\":\"six\"},\"c\":1.23,\"d\":[1.25,3.75,2.5]}")
         }});
         msg = e.execute_cql("select json * from json_data where a='a2'").get0();
         assert_that(msg).is_rows().with_rows({{
                 utf8_type->decompose(
-                    "{\"a\": \"a2\", \"b\": {\"0\": \"zero\", \"6\": \"six\"}, \"c\": 1.23, \"d\": [3.75, 2.5]}")
+                    "{\"a\":\"a2\",\"b\":{\"0\":\"zero\",\"6\":\"six\"},\"c\":1.23,\"d\":[3.75,2.5]}")
         }});
         msg = e.execute_cql("select json * from json_data where a='a3'").get0();
         assert_that(msg).is_rows().with_rows({{
                 utf8_type->decompose(
-                    "{\"a\": \"a3\", \"b\": {\"0\": \"zero\", \"3\": \"three\"}, \"c\": 1.23, \"d\": [1.25, 2.5]}")
+                    "{\"a\":\"a3\",\"b\":{\"0\":\"zero\",\"3\":\"three\"},\"c\":1.23,\"d\":[1.25,2.5]}")
         }});
         msg = e.execute_cql("select json * from json_data where a='a4'").get0();
         assert_that(msg).is_rows().with_rows({{
                 utf8_type->decompose(
-                    "{\"a\": \"a4\", \"b\": {\"1\": \"one\"}, \"c\": 1.23, \"d\": [1]}")
+                    "{\"a\":\"a4\",\"b\":{\"1\":\"one\"},\"c\":1.23,\"d\":[1]}")
         }});
 
     });
@@ -526,12 +526,12 @@ SEASTAR_TEST_CASE(test_json_tuple) {
 
         msg = e.execute_cql("SELECT JSON * FROM t WHERE id = 3;").get0();
         assert_that(msg).is_rows().with_rows({{
-            utf8_type->decompose(sstring("{\"id\": 3, \"v\": [5, \"test543\", 4.5]}"))
+            utf8_type->decompose(sstring("{\"id\":3,\"v\":[5,\"test543\",4.5]}"))
         }});
 
-        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\" : 7, \"v\": [5, \"test123\", 2.5, 3]}';").get(), marshal_exception);
-        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\" : 7, \"v\": [\"test123\", 5, 2.5]}';").get(), marshal_exception);
-        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\" : 7, \"v\": {\"1\": 5}}';").get(), marshal_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\": 7, \"v\":[5, \"test123\", 2.5, 3]}';").get(), marshal_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\": 7, \"v\":[\"test123\", 5, 2.5]}';").get(), marshal_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\": 7, \"v\":{\"1\": 5}}';").get(), marshal_exception);
     });
 }
 
@@ -554,14 +554,14 @@ SEASTAR_TEST_CASE(test_json_udt) {
 
         msg = e.execute_cql("SELECT JSON * FROM t WHERE id = 3;").get0();
         assert_that(msg).is_rows().with_rows({{
-            utf8_type->decompose(sstring("{\"id\": 3, \"v\": {\"first\": 5, \"second\": \"test543\", \"third\": 4.5}}"))
+            utf8_type->decompose(sstring("{\"id\":3,\"v\":{\"first\":5,\"second\":\"test543\",\"third\":4.5}}"))
         }});
 
         e.execute_cql("INSERT INTO t (id, v) VALUES (3, {\"first\": 3, \"third\": 4.5});").get();
 
         msg = e.execute_cql("SELECT JSON * FROM t WHERE id = 3;").get0();
         assert_that(msg).is_rows().with_rows({{
-            utf8_type->decompose(sstring("{\"id\": 3, \"v\": {\"first\": 3, \"second\": null, \"third\": 4.5}}"))
+            utf8_type->decompose(sstring("{\"id\":3,\"v\":{\"first\":3,\"second\":null,\"third\":4.5}}"))
         }});
 
         BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t JSON '{\"id\" : 7, \"v\": [5, \"test123\", 2.5, 3, 3]}';").get(), marshal_exception);
@@ -574,7 +574,7 @@ SEASTAR_TEST_CASE(test_json_udt) {
         e.execute_cql("INSERT INTO t2 (id, v) VALUES (1, (7));").get();
         msg = e.execute_cql("SELECT JSON * FROM t2 WHERE id = 1;").get0();
         assert_that(msg).is_rows().with_rows({{
-            utf8_type->decompose(sstring("{\"id\": 1, \"v\": {\"WeirdNameThatNeedsEscaping\\\\n,)\": 7}}"))
+            utf8_type->decompose(sstring("{\"id\":1,\"v\":{\"WeirdNameThatNeedsEscaping\\\\n,)\":7}}"))
         }});
     });
 }

@@ -50,6 +50,7 @@
 #include "hashing.hh"
 #include <boost/multiprecision/cpp_int.hpp>  // FIXME: remove somehow
 #include "utils/fragmented_temporary_buffer.hh"
+#include "json.hh"
 
 class tuple_type_impl;
 class big_decimal;
@@ -581,10 +582,11 @@ public:
     }
     virtual sstring to_string(const bytes& b) const = 0;
     virtual bytes from_string(sstring_view text) const = 0;
-    virtual sstring to_json_string(const bytes& b) const = 0;
-    sstring to_json_string(const bytes_opt& b) const {
-        return b ? to_json_string(*b) : "null";
+    virtual sstring to_json_string(bytes_view bv) const {
+    	return json::to_sstring(to_json(bv));
     }
+    sstring to_json_string(const bytes_opt& b) const;
+    virtual Json::Value to_json(bytes_view bv) const = 0;
     virtual bytes from_json_object(const Json::Value& value, cql_serialization_format sf) const = 0;
     virtual bool is_counter() const { return false; }
     virtual bool is_collection() const { return false; }
@@ -952,8 +954,8 @@ public:
     virtual sstring to_string(const bytes& b) const override {
         return _underlying_type->to_string(b);
     }
-    virtual sstring to_json_string(const bytes& b) const override {
-        return _underlying_type->to_json_string(b);
+    virtual Json::Value to_json(bytes_view bv) const override {
+        return _underlying_type->to_json(bv);
     }
     virtual bytes from_json_object(const Json::Value& value, cql_serialization_format sf) const override {
         return _underlying_type->from_json_object(value, sf);

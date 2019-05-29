@@ -78,7 +78,7 @@ public:
         encoded_row.write("{", 1);
         for (size_t i = 0; i < _selector_names.size(); ++i) {
             if (i > 0) {
-                encoded_row.write(", ", 2);
+                encoded_row.write(",", 1);
             }
             bool has_any_upper = boost::algorithm::any_of(_selector_names[i], [](unsigned char c) { return std::isupper(c); });
             encoded_row.write("\"", 1);
@@ -89,7 +89,7 @@ public:
             if (has_any_upper) {
                 encoded_row.write("\\\"", 2);
             }
-            encoded_row.write("\": ", 3);
+            encoded_row.write("\":", 2);
             sstring row_sstring = _selector_types[i]->to_json_string(parameters[i]);
             encoded_row.write(row_sstring.c_str(), row_sstring.size());
         }
