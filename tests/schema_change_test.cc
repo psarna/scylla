@@ -565,25 +565,28 @@ SEASTAR_TEST_CASE(test_schema_digest_does_not_change) {
 
         schema_features sf = schema_features::of<schema_feature::DIGEST_INSENSITIVE_TO_EXPIRY>();
 
-        expect_digest(sf, utils::UUID("492719e5-0169-30b1-a15e-3447674c0c0c"));
+        expect_digest(sf, utils::UUID("82fdf4f5-1390-3bf7-9d4b-a4692a834b8f"));
 
         sf.set<schema_feature::VIEW_VIRTUAL_COLUMNS>();
-        expect_digest(sf, utils::UUID("be3c0af4-417f-31d5-8e0e-4ac257ec00ad"));
+        expect_digest(sf, utils::UUID("c38b6d7a-9d50-375c-a756-c798c7fb0b23"));
 
-        expect_digest(schema_features::full(), utils::UUID("be3c0af4-417f-31d5-8e0e-4ac257ec00ad"));
+        sf.set<schema_feature::COMPUTED_COLUMNS>();
+        expect_digest(sf, utils::UUID("cdc60be8-6121-30e0-875d-2d8227a81323"));
+
+        expect_digest(schema_features::full(), utils::UUID("cdc60be8-6121-30e0-875d-2d8227a81323"));
 
         // Causes tombstones to become expired
         // This is in order to test that schema disagreement doesn't form due to expired tombstones being collected
         // Refs https://github.com/scylladb/scylla/issues/4485
         forward_jump_clocks(std::chrono::seconds(60*60*24*31));
 
-        expect_digest(schema_features::full(), utils::UUID("be3c0af4-417f-31d5-8e0e-4ac257ec00ad"));
+        expect_digest(schema_features::full(), utils::UUID("cdc60be8-6121-30e0-875d-2d8227a81323"));
 
         // FIXME: schema_mutations::digest() is still sensitive to expiry, so we can check versions only after forward_jump_clocks()
         // otherwise the results would not be stable.
-        expect_version("tests", "table1", utils::UUID("4198e26c-f214-3888-9c49-c396eb01b8d7"));
-        expect_version("ks", "tbl", utils::UUID("5c9cadec-e5df-357e-81d0-0261530af64b"));
-        expect_version("ks", "tbl_view", utils::UUID("1d91ad22-ea7c-3e7f-9557-87f0f3bb94d7"));
-        expect_version("ks", "tbl_view_2", utils::UUID("2dcd4a37-cbb5-399b-b3c9-8eb1398b096b"));
+        expect_version("tests", "table1", utils::UUID("d4cd17bc-3ad6-3081-aab9-70181dc87099"));
+        expect_version("ks", "tbl", utils::UUID("d9fda849-fbf2-3f7d-84d6-89a6edaffa2a"));
+        expect_version("ks", "tbl_view", utils::UUID("396eb1b9-6525-3ca9-8428-38462f87cb26"));
+        expect_version("ks", "tbl_view_2", utils::UUID("ae8fd921-eb50-3486-9a47-fd38279df48b"));
     }, db_cfg).then([tmp = std::move(tmp)] {});
 }
