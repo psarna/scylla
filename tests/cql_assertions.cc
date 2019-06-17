@@ -189,3 +189,14 @@ shared_ptr<cql_transport::messages::result_message> cquery_nofail(
     }
     return shared_ptr<cql_transport::messages::result_message>(nullptr);
 }
+
+shared_ptr<cql_transport::messages::result_message> cquery_nofail(
+        cql_test_env& env, const char* query, std::unique_ptr<cql3::query_options>&& qo, const std::experimental::source_location& loc) {
+    try {
+        return env.execute_cql(query, std::move(qo)).get0();
+    } catch (...) {
+        BOOST_FAIL(format("query '{}' failed: {}\n{}:{}: originally from here",
+                          query, std::current_exception(), loc.file_name(), loc.line()));
+    }
+    return shared_ptr<cql_transport::messages::result_message>(nullptr);
+}
