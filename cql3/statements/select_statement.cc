@@ -443,8 +443,8 @@ indexed_table_select_statement::prepare_command_for_base_query(const query_optio
     return cmd;
 }
 
-future<shared_ptr<cql_transport::messages::result_message>>
-indexed_table_select_statement::execute_base_query(
+future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>
+indexed_table_select_statement::do_execute_base_query(
         service::storage_proxy& proxy,
         dht::partition_range_vector&& partition_ranges,
         service::query_state& state,
@@ -495,8 +495,22 @@ indexed_table_select_statement::execute_base_query(
         }).then([&merger]() {
             return merger.get();
         });
-    }).then([this, &proxy, &state, &options, now, cmd, paging_state = std::move(paging_state)] (foreign_ptr<lw_shared_ptr<query::result>> result) mutable {
-        return this->process_base_query_results(std::move(result), cmd, proxy, state, options, now, std::move(paging_state));
+    }).then([cmd] (foreign_ptr<lw_shared_ptr<query::result>> result) mutable {
+        return make_ready_future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>(std::move(result), std::move(cmd));
+    });
+}
+
+future<shared_ptr<cql_transport::messages::result_message>>
+indexed_table_select_statement::execute_base_query(
+        service::storage_proxy& proxy,
+        dht::partition_range_vector&& partition_ranges,
+        service::query_state& state,
+        const query_options& options,
+        gc_clock::time_point now,
+        ::shared_ptr<const service::pager::paging_state> paging_state) {
+    return do_execute_base_query(proxy, std::move(partition_ranges), state, options, now, paging_state).then(
+            [this, &proxy, &state, &options, now, paging_state = std::move(paging_state)] (foreign_ptr<lw_shared_ptr<query::result>> result, lw_shared_ptr<query::read_command> cmd) {
+        return process_base_query_results(std::move(result), std::move(cmd), proxy, state, options, now, std::move(paging_state));
     });
 }
 
@@ -509,8 +523,8 @@ indexed_table_select_statement::execute_base_query(
 // but to implement the general case (multiple rows from multiple partitions)
 // efficiently, we will need more support from other layers.
 // Keys are ordered in token order (see #3423)
-future<shared_ptr<cql_transport::messages::result_message>>
-indexed_table_select_statement::execute_base_query(
+future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>
+indexed_table_select_statement::do_execute_base_query(
         service::storage_proxy& proxy,
         std::vector<primary_key>&& primary_keys,
         service::query_state& state,
@@ -565,9 +579,23 @@ indexed_table_select_statement::execute_base_query(
             });
         }).then([&merger] () {
             return merger.get();
+        }).then([cmd] (foreign_ptr<lw_shared_ptr<query::result>> result) mutable {
+            return make_ready_future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>(std::move(result), std::move(cmd));
         });
-    }).then([this, &proxy, &state, &options, now, cmd, paging_state = std::move(paging_state)] (foreign_ptr<lw_shared_ptr<query::result>> result) mutable {
-        return this->process_base_query_results(std::move(result), cmd, proxy, state, options, now, std::move(paging_state));
+    });
+}
+
+future<shared_ptr<cql_transport::messages::result_message>>
+indexed_table_select_statement::execute_base_query(
+        service::storage_proxy& proxy,
+        std::vector<primary_key>&& primary_keys,
+        service::query_state& state,
+        const query_options& options,
+        gc_clock::time_point now,
+        ::shared_ptr<const service::pager::paging_state> paging_state) {
+    return do_execute_base_query(proxy, std::move(primary_keys), state, options, now, paging_state).then(
+            [this, &proxy, &state, &options, now, paging_state = std::move(paging_state)] (foreign_ptr<lw_shared_ptr<query::result>> result, lw_shared_ptr<query::read_command> cmd) {
+        return process_base_query_results(std::move(result), std::move(cmd), proxy, state, options, now, std::move(paging_state));
     });
 }
 

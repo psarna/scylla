@@ -236,6 +236,14 @@ private:
     lw_shared_ptr<query::read_command>
     prepare_command_for_base_query(const query_options& options, service::query_state& state, gc_clock::time_point now, bool use_paging);
 
+    future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>
+    do_execute_base_query(
+            service::storage_proxy& proxy,
+            dht::partition_range_vector&& partition_ranges,
+            service::query_state& state,
+            const query_options& options,
+            gc_clock::time_point now,
+            ::shared_ptr<const service::pager::paging_state> paging_state);
     future<shared_ptr<cql_transport::messages::result_message>>
     execute_base_query(
             service::storage_proxy& proxy,
@@ -245,6 +253,14 @@ private:
             gc_clock::time_point now,
             ::shared_ptr<const service::pager::paging_state> paging_state);
 
+    future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>
+    do_execute_base_query(
+            service::storage_proxy& proxy,
+            std::vector<primary_key>&& primary_keys,
+            service::query_state& state,
+            const query_options& options,
+            gc_clock::time_point now,
+            ::shared_ptr<const service::pager::paging_state> paging_state);
     future<shared_ptr<cql_transport::messages::result_message>>
     execute_base_query(
             service::storage_proxy& proxy,
