@@ -1093,3 +1093,28 @@ SEASTAR_TEST_CASE(test_secondary_index_allow_some_column_drops) {
         BOOST_REQUIRE_THROW(e.execute_cql("alter table cf2 drop d").get(), exceptions::invalid_request_exception);
     });
 }
+
+SEASTAR_TEST_CASE(test_indexing_paging_and_aggregation) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        cquery_nofail(e, "CREATE TABLE fpa (id int primary key, v int)");
+        cquery_nofail(e, "CREATE INDEX ON fpa(v)");
+        for (int i = 0; i < 1000; ++i) {
+            cquery_nofail(e, format("INSERT INTO fpa (id, v) VALUES ({}, {})", i, i % 2).c_str());
+        }
+
+        auto qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                cql3::query_options::specific_options{2, nullptr, {}, api::new_timestamp()});
+        auto msg = cquery_nofail(e, "SELECT sum(id) FROM fpa WHERE v = 0;", std::move(qo));
+        // Even though we set up paging, we still expect a single result from an aggregation function
+        assert_that(msg).is_rows().with_rows({
+            { int32_type->decompose(249500)},
+        });
+
+        qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                cql3::query_options::specific_options{3, nullptr, {}, api::new_timestamp()});
+        msg = cquery_nofail(e, "SELECT avg(id) FROM fpa WHERE v = 1;", std::move(qo));
+        assert_that(msg).is_rows().with_rows({
+            { int32_type->decompose(500)},
+        });
+    });
+}
