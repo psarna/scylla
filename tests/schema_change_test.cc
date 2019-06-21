@@ -527,6 +527,8 @@ SEASTAR_TEST_CASE(test_schema_digest_does_not_change) {
         fs::copy(std::string(data_dir), std::string(tmp.path().string()), fs::copy_options::recursive);
         db_cfg.data_file_directories({tmp.path().string()}, db::config::config_source::CommandLine);
     }
+    cql_test_config cfg_in(db_cfg);
+    cfg_in.disabled_features = std::set<sstring>{"COMPUTED_COLUMNS"};
 
     return do_with_cql_env_thread([regenerate](cql_test_env& e) {
         if (regenerate) {
