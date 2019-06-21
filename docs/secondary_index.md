@@ -66,3 +66,23 @@ Example output from system\_schema.indexes is as follows:
         demodb |         mt | mt_m_entry_idx | COMPOSITES | {'target': '{"pk":[{"key":"\u0000\u0000\u0000\u0007","map":"m","type":"map_value"}]}'}
 
 Map value indexes can be both local and global, just like their regular counterparts.
+
+# Index target serialization
+
+So far, index targets were always column names, so their serialization was simply storing the column name in a string.
+
+Index target serialization can also be based on JSON:
+{
+  "key": "\u0000\u0000\u0000\u0007",
+  "map": "m",
+  "type": "map\_value"
+}
+
+In the example above, the "key" field stores a binary blob representing the map key being indexed.
+The "map" field stores the name of the map column, and "type" indicates that this index is a map value index.
+
+In order to deserialize, the first thing to check is whether the index is represented as JSON.
+If it is, the mandatory "type" column should indicate the type of the index, which in turn
+implies which fields should also be present in the representation (e.g. for map value indexing, "map" and "key" are required).
+If the index target is not represented as a JSON document, it should be treated as if it was a single column name.
+
