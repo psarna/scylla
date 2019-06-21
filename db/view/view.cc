@@ -92,7 +92,7 @@ cql3::statements::select_statement& view_info::select_statement() const {
            }
         }
 
-        if (boost::algorithm::any_of(_schema.all_columns(), std::mem_fn(&column_definition::is_computed))) {
+        if (legacy_token_column || boost::algorithm::any_of(_schema.all_columns(), std::mem_fn(&column_definition::is_computed))) {
             auto real_columns = _schema.all_columns() | boost::adaptors::filtered([this, legacy_token_column] (const column_definition& cdef) {
                 return &cdef != legacy_token_column && !cdef.is_computed();
             });
