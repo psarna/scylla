@@ -86,6 +86,7 @@ public:
     class with_anonymous_function;
 
     class with_field_selection;
+    class with_map_value_selection;
 
     class with_cast;
 };

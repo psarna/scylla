@@ -71,6 +71,7 @@ options {
 #include "cql3/selection/raw_selector.hh"
 #include "cql3/keyspace_element_name.hh"
 #include "cql3/selection/selectable_with_field_selection.hh"
+#include "cql3/selection/selectable_with_map_value_selection.hh"
 #include "cql3/constants.hh"
 #include "cql3/operation_impl.hh"
 #include "cql3/error_listener.hh"
@@ -427,6 +428,7 @@ unaliasedSelector returns [shared_ptr<selectable::raw> s]
        | K_TTL       '(' c=cident ')'              { tmp = make_shared<selectable::writetime_or_ttl::raw>(c, false); }
        | f=functionName args=selectionFunctionArgs { tmp = ::make_shared<selectable::with_function::raw>(std::move(f), std::move(args)); }
        | K_CAST      '(' arg=unaliasedSelector K_AS t=native_type ')'  { tmp = ::make_shared<selectable::with_cast::raw>(std::move(arg), std::move(t)); }
+       | c=cident '[' v=constant ']'  { tmp = make_shared<selectable::with_map_value_selection::raw>(std::move(c), std::move(v)); }
        )
        ( '.' fi=cident { tmp = make_shared<selectable::with_field_selection::raw>(std::move(tmp), std::move(fi)); } )*
     { $s = tmp; }

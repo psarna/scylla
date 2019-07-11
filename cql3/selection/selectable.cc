@@ -21,6 +21,7 @@
 
 #include "selectable.hh"
 #include "selectable_with_field_selection.hh"
+#include "selectable_with_map_value_selection.hh"
 #include "field_selector.hh"
 #include "writetime_or_ttl.hh"
 #include "selector_factories.hh"
@@ -29,6 +30,8 @@
 #include "cql3/functions/aggregate_fcts.hh"
 #include "abstract_function_selector.hh"
 #include "writetime_or_ttl_selector.hh"
+#include "map_value_selector.hh"
+#include "types/map.hh"
 
 namespace cql3 {
 
@@ -158,9 +161,23 @@ selectable::with_field_selection::new_selector_factory(database& db, schema_ptr 
                                                        _selected->to_string(), ut->as_cql3_type(), _field));
 }
 
+shared_ptr<selector::factory>
+selectable::with_map_value_selection::new_selector_factory(database& db, schema_ptr s, std::vector<const column_definition*>& defs) {
+    auto&& factory = _selected->new_selector_factory(db, s, defs);
+    auto&& type = factory->new_instance()->get_type();
+    auto map_type = static_pointer_cast<const map_type_impl>(type);
+
+    return map_value_selector::new_factory(map_type, _key->_bytes.data().value(), std::move(factory));
+}
+
 sstring
 selectable::with_field_selection::to_string() const {
     return format("{}.{}", _selected->to_string(), _field->to_string());
+}
+
+sstring
+selectable::with_map_value_selection::to_string() const {
+    return format("{}[{}]", _selected->to_string(), _key->to_string());
 }
 
 shared_ptr<selectable>
@@ -171,8 +188,27 @@ selectable::with_field_selection::raw::prepare(schema_ptr s) {
             static_pointer_cast<column_identifier>(_field->prepare(s)));
 }
 
+shared_ptr<selectable>
+selectable::with_map_value_selection::raw::prepare(schema_ptr s) {
+    auto ident = static_pointer_cast<column_identifier>(_selected->prepare(s));
+    const column_definition* cdef = s->get_column_definition(ident->name());
+    if (!cdef) {
+        throw exceptions::invalid_request_exception(format("Undefined map name {} in selection clause", ident->name()));
+    }
+    auto map_type = dynamic_pointer_cast<const map_type_impl>(cdef->type);
+    if (!map_type) {
+        throw exceptions::invalid_request_exception(format("Map value selection must be passed a map column, not: {}", ident->name()));
+    }
+    return make_shared<with_map_value_selection>(ident, static_pointer_cast<constants::value>(_key->prepare_as(map_type->get_values_type())));
+}
+
 bool
 selectable::with_field_selection::raw::processes_selection() const {
+    return true;
+}
+
+bool
+selectable::with_map_value_selection::raw::processes_selection() const {
     return true;
 }
 
