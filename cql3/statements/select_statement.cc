@@ -334,6 +334,47 @@ select_statement::do_execute(service::storage_proxy& proxy,
 
     command->slice.options.set<query::partition_slice::option::allow_short_read>();
     auto timeout_duration = options.get_timeout_config().*get_timeout_config_selector();
+
+    static logging::logger clogger("COUNT HACK");
+    clogger.warn("Is aggregate? {}", _selection->is_aggregate());
+    const bool ultra_turbo_nitro_concurrency_count_hack_for_glauber = _selection->is_aggregate();
+    if (ultra_turbo_nitro_concurrency_count_hack_for_glauber) {
+        const int max_ranges_per_run = 64;
+        clogger.warn("Using max ranges per run: {}", max_ranges_per_run);
+
+        auto timeout = db::timeout_clock::now() + timeout_duration;
+
+        service::query_ranges_to_vnodes_generator ranges_to_vnodes(_schema, std::move(key_ranges));
+        std::vector<dht::partition_range_vector> ranges;
+        while (!ranges_to_vnodes.empty()) {
+            ranges.push_back(ranges_to_vnodes(max_ranges_per_run));
+        }
+
+        return do_with(std::move(ranges), cql3::selection::result_set_builder(*_selection, now, options.get_cql_serialization_format(), *_group_by_cell_indices),
+                [this, page_size, max_ranges_per_run, &proxy, &state, &options, now, command, timeout, restrictions_need_filtering] (std::vector<dht::partition_range_vector>& ranges, cql3::selection::result_set_builder& builder)
+                        -> future<shared_ptr<cql_transport::messages::result_message>> {
+            // NOTICE(sarna): Using the same shared builder for multiple pagers is really far-fetched!
+            // It *should* work for COUNT and AVG, but occasional explosions and fatalities are expected.
+            return parallel_for_each(ranges, [this, &proxy, &state, &options, &builder, page_size, now, command, timeout, restrictions_need_filtering] (dht::partition_range_vector& prange) {
+                clogger.warn("Serving range {}->{} of size {}", prange.front(), prange.back(), prange.size());
+                auto range_pager = service::pager::query_pagers::pager(_schema, _selection,
+                        state, options, command, std::move(prange), _stats, restrictions_need_filtering ? _restrictions : nullptr);
+                return do_until([range_pager, &builder, page_size, now, timeout] {return range_pager->is_exhausted();}, [range_pager, &builder, page_size, now, timeout] {
+                    return range_pager->fetch_page(builder, page_size, now, timeout);
+                });
+            }).then([this, &builder, command, options, now, restrictions_need_filtering]() {
+                clogger.warn("Finished");
+                auto rs = builder.build();
+                if (restrictions_need_filtering) {
+                    _stats.filtered_rows_matched_total += rs->size();
+                }
+                update_stats_rows_read(rs->size());
+                auto msg = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
+                return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(std::move(msg));
+            });
+        });
+    }
+
     auto p = service::pager::query_pagers::pager(_schema, _selection,
             state, options, command, std::move(key_ranges), _stats, restrictions_need_filtering ? _restrictions : nullptr);
 
