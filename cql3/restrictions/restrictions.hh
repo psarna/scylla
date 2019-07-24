@@ -49,7 +49,7 @@
 #include "schema.hh"
 #include "index/secondary_index_manager.hh"
 #include "restriction.hh"
-
+extern logging::logger dblog;
 namespace cql3 {
 
 namespace restrictions {
@@ -58,6 +58,9 @@ namespace restrictions {
  * Sets of restrictions
  */
 class restrictions {
+protected:
+    using op_enum = super_enum<restriction::op, restriction::op::EQ, restriction::op::SLICE, restriction::op::IN, restriction::op::CONTAINS, restriction::op::LIKE>;
+    enum_set<op_enum> _ops;
 public:
     virtual ~restrictions() {}
 
