@@ -67,7 +67,7 @@ public:
         EQ, SLICE, IN, CONTAINS, LIKE
     };
     enum class target {
-        SINGLE_COLUMN, MULTIPLE_COLUMNS
+        SINGLE_COLUMN, MULTIPLE_COLUMNS, TOKEN
     };
 protected:
     using op_enum = super_enum<restriction::op, restriction::op::EQ, restriction::op::SLICE, restriction::op::IN, restriction::op::CONTAINS, restriction::op::LIKE>;
@@ -84,8 +84,8 @@ public:
         _ops.set(op);
     }
 
-    virtual bool is_on_token() const {
-        return false;
+    bool is_on_token() const {
+        return _target == target::TOKEN;
     }
 
     bool is_multi_column() const {
