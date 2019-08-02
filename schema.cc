@@ -1349,11 +1349,9 @@ bytes_opt map_value_column_computation::compute_value(const schema& schema, cons
     auto collection_t = static_pointer_cast<const collection_type_impl>(map_column.type);
 
     return cell.data.with_linearized([&] (bytes_view cell_bv) {
+        std::optional<atomic_cell_view> single_value = collection_t->deserialize_single_value(cell_bv, _key);
         auto m_view = collection_t->deserialize_mutation_form(cell_bv);
-        auto it = boost::find_if(m_view.cells, [this] (const std::pair<bytes_view, atomic_cell_view>& entry) {
-            return entry.first == _key && entry.second.is_live();
-        });
-        return (it != m_view.cells.end()) ? bytes_opt{it->second.value().linearize()} : bytes_opt{};
+        return single_value ? bytes_opt{single_value->value().linearize()} : bytes_opt{};
     });
 }
 
