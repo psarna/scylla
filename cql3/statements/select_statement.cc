@@ -975,6 +975,12 @@ dht::partition_range_vector indexed_table_select_statement::get_partition_ranges
         throw exceptions::invalid_request_exception("Indexed column not found in schema");
     }
 
+    // For CONTAINS and CONTAINS KEY
+    auto single_column_index_restrictions = dynamic_pointer_cast<restrictions::single_column_restrictions>(_used_index_restrictions);
+    if (single_column_index_restrictions && single_column_index_restrictions->is_non_entry_contains()) {
+        partition_ranges.emplace_back(dht::partition_range::make_open_ended_both_sides());
+        return partition_ranges;
+    }
     bytes_opt value = _used_index_restrictions->value_for(*cdef, options);
     if (value) {
         auto pk = partition_key::from_single_value(*_view_schema, *value);
