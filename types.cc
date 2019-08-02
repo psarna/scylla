@@ -1093,6 +1093,27 @@ collection_type_impl::reserialize(cql_serialization_format from, cql_serializati
     return ret;
 }
 
+std::optional<atomic_cell_view> collection_type_impl::deserialize_single_value(bytes_view in, bytes_view wanted_key) const {
+    auto has_tomb = read_simple<bool>(in);
+    if (has_tomb) {
+        in.remove_prefix(sizeof(api::timestamp_type) + sizeof(gc_clock::duration::rep));
+    }
+    auto nr = read_simple<uint32_t>(in);
+    for (uint32_t i = 0; i != nr; ++i) {
+        // FIXME: we could probably avoid the need for size
+        auto ksize = read_simple<uint32_t>(in);
+        auto key = read_simple_bytes(in, ksize);
+        auto vsize = read_simple<uint32_t>(in);
+        if (key == wanted_key) {
+            auto value = atomic_cell_view::from_bytes(value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
+            return value.is_live() ? std::optional<atomic_cell_view>(std::move(value)) : std::nullopt;
+        } else {
+            in.remove_prefix(vsize);
+        }
+    }
+    return {};
+}
+
 set_type
 set_type_impl::get_instance(data_type elements, bool is_multi_cell) {
     return intern::get_instance(elements, is_multi_cell);
