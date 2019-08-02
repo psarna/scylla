@@ -1228,9 +1228,9 @@ SEASTAR_TEST_CASE(test_map_value_indexing_basic) {
     return do_with_cql_env_thread([] (auto& e) {
         cquery_nofail(e, "CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)");
 
-        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})");
-        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})");
-        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb','g':'g'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc','g':'g2'})");
+        cquery_nofail(e, "INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc','h':'h'})");
 
         cquery_nofail(e, "CREATE INDEX local_m1_1 ON t ((id),m1[1])");
         cquery_nofail(e, "CREATE INDEX local_m1_2 ON t ((id),m1[2])");
@@ -1238,6 +1238,8 @@ SEASTAR_TEST_CASE(test_map_value_indexing_basic) {
         cquery_nofail(e, "CREATE INDEX global_m2 ON t (m1[2])");
         cquery_nofail(e, "CREATE INDEX global_m3 ON t (m1[3])");
         cquery_nofail(e, "CREATE INDEX global1 ON t (m2['aa'])");
+        cquery_nofail(e, "CREATE INDEX global2 ON t (m2['g'])");
+        cquery_nofail(e, "CREATE INDEX local1 on t ((id),m2['g'])");
 
         eventually([&] {
             auto msg = cquery_nofail(e, "SELECT id FROM t WHERE m1[3] = 3");
@@ -1267,6 +1269,16 @@ SEASTAR_TEST_CASE(test_map_value_indexing_basic) {
         });
 
         BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m2['a'] = 'b'").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m2 CONTAINS KEY 'g'").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}});
+        });
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE id = 1 AND m2 CONTAINS KEY 'g'").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}});
+        });
     });
 }
 
@@ -1326,6 +1338,7 @@ SEASTAR_TEST_CASE(test_map_value_indexing_paging) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("CREATE TABLE tab (pk int, ck text, v int, v2 text, v3 map<int, text>, PRIMARY KEY (pk, ck))").get();
         e.execute_cql("CREATE INDEX ON tab (v3[7])").get();
+        e.execute_cql("CREATE INDEX ON tab(v3[3])").get();
 
         sstring big_string(4096, 'j');
         // There should be enough rows to use multiple pages
@@ -1362,6 +1375,25 @@ SEASTAR_TEST_CASE(test_map_value_indexing_paging) {
                 qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
                         cql3::query_options::specific_options{716, paging_state, {}, api::new_timestamp()});
                 msg = e.execute_cql("SELECT pk, ck FROM tab WHERE v3[7] = 'lalala'", std::move(qo)).get0();
+                rows_fetched = count_rows_fetched(msg);
+                paging_state = extract_paging_state(msg);
+                BOOST_REQUIRE(paging_state || rows_fetched == 1);
+            }
+            BOOST_REQUIRE_EQUAL(rows_fetched, 1);
+            assert_that(msg).is_rows().with_rows({
+                {int32_type->decompose(99999), utf8_type->decompose("hello99999")},
+            });
+        });
+
+        eventually([&] {
+            std::unique_ptr<cql3::query_options> qo;
+            ::shared_ptr<service::pager::paging_state> paging_state;
+            ::shared_ptr<cql_transport::messages::result_message> msg;
+            size_t rows_fetched = 0;
+            while (rows_fetched  == 0) {
+                qo = std::make_unique<cql3::query_options>(db::consistency_level::LOCAL_ONE, infinite_timeout_config, std::vector<cql3::raw_value>{},
+                        cql3::query_options::specific_options{419, paging_state, {}, api::new_timestamp()});
+                msg = e.execute_cql("SELECT pk, ck FROM tab WHERE v3 CONTAINS KEY 3", std::move(qo)).get0();
                 rows_fetched = count_rows_fetched(msg);
                 paging_state = extract_paging_state(msg);
                 BOOST_REQUIRE(paging_state || rows_fetched == 1);
