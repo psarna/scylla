@@ -253,6 +253,14 @@ public:
     bool is_all_eq() const {
         return _is_all_eq;
     }
+
+    bool is_non_entry_contains() const {
+        if (_restrictions.size() > 1) {
+            return false;
+        }
+        auto contains_restriction = dynamic_pointer_cast<single_column_restriction::contains>(_restrictions.begin()->second);
+        return contains_restriction && contains_restriction->number_of_entries() == 0;
+    }
 };
 
 }
