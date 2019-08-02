@@ -1228,9 +1228,9 @@ SEASTAR_TEST_CASE(test_map_value_indexing) {
     return do_with_cql_env_thread([] (auto& e) {
         e.execute_cql("CREATE TABLE t (id int PRIMARY KEY, m1 map<int, int>, m2 map<text,text>)").get();
 
-        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb'})").get();
-        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
-        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (1, {1:1,2:2,3:3}, {'a':'b','aa':'bb','g':'g'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (2, {2:5,3:3,7:9}, {'a':'b','aa':'cc','g':'g2'})").get();
+        e.execute_cql("INSERT INTO t (id, m1, m2) VALUES (3, {5:5,3:3,7:9}, {'a':'b','aa':'cc','h':'h'})").get();
 
         e.execute_cql("CREATE INDEX local_m1_1 ON t ((id),m1[1])").get();
         e.execute_cql("CREATE INDEX local_m1_2 ON t ((id),m1[2])").get();
@@ -1238,6 +1238,7 @@ SEASTAR_TEST_CASE(test_map_value_indexing) {
         e.execute_cql("CREATE INDEX global_m2 ON t (m1[2])").get();
         e.execute_cql("CREATE INDEX global_m3 ON t (m1[3])").get();
         e.execute_cql("CREATE INDEX global1 ON t (m2['aa'])").get();
+        e.execute_cql("CREATE INDEX global2 ON t (m2['g'])").get();
 
         eventually([&] {
             auto msg = e.execute_cql("SELECT id FROM t WHERE m1[3] = 3").get0();
@@ -1267,6 +1268,11 @@ SEASTAR_TEST_CASE(test_map_value_indexing) {
         });
 
         BOOST_REQUIRE_THROW(e.execute_cql("SELECT id FROM t WHERE m2['a'] = 'b'").get(), exceptions::invalid_request_exception);
+
+        eventually([&] {
+            auto msg = e.execute_cql("SELECT id FROM t WHERE m2 CONTAINS KEY 'g'").get0();
+            assert_that(msg).is_rows().with_rows_ignore_order({{{int32_type->decompose(1)}}, {{int32_type->decompose(2)}}});
+        });
     });
 }
 
