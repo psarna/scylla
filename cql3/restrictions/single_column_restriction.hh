@@ -505,22 +505,26 @@ public:
 
         virtual bool is_supported_by(const secondary_index::index& index, const schema& schema) const override {
             bool supported = false;
+            ::shared_ptr<term> index_target;
             if (number_of_values() > 0) {
                 supported |= index.supports_expression(_column_def, cql3::operator_type::CONTAINS);
+                index_target = _values.front();
             }
             if (number_of_keys() > 0) {
                 supported |= index.supports_expression(_column_def, cql3::operator_type::CONTAINS_KEY);
+                index_target = _keys.front();
             }
             if (number_of_entries() > 0) {
                 supported |= index.supports_expression(_column_def, cql3::operator_type::EQ);
-                auto* view_target_column = index.metadata().get_target_column(schema);
-                if (view_target_column && view_target_column->is_computed()) {
-                    // Index supports this computed column restriction only if it's a map value computation and the keys match
-                    auto* map_value_computation = dynamic_cast<const map_value_column_computation*>(&view_target_column->get_computation());
-                    if (map_value_computation) {
-                        auto constant = dynamic_pointer_cast<constants::value>(_entry_keys.front());
-                        supported &= (constant && map_value_computation->key() == *constant->_bytes.data());
-                    }
+                index_target = _entry_keys.front();
+            }
+            auto* view_target_column = index.metadata().get_target_column(schema);
+            if (view_target_column && view_target_column->is_computed()) {
+                // Index supports this computed column restriction only if it's a map value computation and the keys match
+                auto* map_value_computation = dynamic_cast<const map_value_column_computation*>(&view_target_column->get_computation());
+                if (map_value_computation) {
+                    auto constant = dynamic_pointer_cast<constants::value>(index_target);
+                    supported &= (constant && map_value_computation->key() == *constant->_bytes.data());
                 }
             }
             return supported;
