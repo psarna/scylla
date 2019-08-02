@@ -800,6 +800,15 @@ static void append_base_key_to_index_ck(std::vector<bytes_view>& exploded_index_
     std::move(begin, key_view.end(), std::back_inserter(exploded_index_ck));
 }
 
+// Map value indexes allow queries which are not based on the equality operator,
+// e.g. my_map CONTAINS my_key, as opposed to my_map[my_key] = concrete_value;
+// As such, they need special treatment when a partition/clustering range is generated
+// from them, because instead of a single value, they ask for the whole range.
+static bool should_use_open_ended_index_range(const ::shared_ptr<restrictions::restrictions>& restr) {
+    auto single_column_index_restrictions = dynamic_pointer_cast<restrictions::single_column_restrictions>(restr);
+   return single_column_index_restrictions && single_column_index_restrictions->is_non_entry_contains();
+}
+
 ::shared_ptr<const service::pager::paging_state> indexed_table_select_statement::generate_view_paging_state_from_base_query_results(::shared_ptr<const service::pager::paging_state> paging_state,
         const foreign_ptr<lw_shared_ptr<query::result>>& results, service::storage_proxy& proxy, service::query_state& state, const query_options& options) const {
     const column_definition* cdef = _schema->get_column_definition(to_bytes(_index.target_column()));
@@ -813,7 +822,10 @@ static void append_base_key_to_index_ck(std::vector<bytes_view>& exploded_index_
     }
     auto [last_base_pk, last_base_ck] = result_view.get_last_partition_and_clustering_key();
 
-    bytes_opt indexed_column_value = _used_index_restrictions->value_for(*cdef, options);
+    bytes_opt indexed_column_value;
+    if (!should_use_open_ended_index_range(_used_index_restrictions)) {
+        indexed_column_value = _used_index_restrictions->value_for(*cdef, options);
+    }
 
     auto index_pk = [&]() {
         if (_index.metadata().local()) {
@@ -828,7 +840,9 @@ static void append_base_key_to_index_ck(std::vector<bytes_view>& exploded_index_
 
     bytes token_bytes;
     if (_index.metadata().local()) {
-        exploded_index_ck.push_back(bytes_view(*indexed_column_value));
+        if (indexed_column_value) {
+            exploded_index_ck.push_back(bytes_view(*indexed_column_value));
+        }
     } else {
         dht::i_partitioner& partitioner = dht::global_partitioner();
         token_bytes = partitioner.token_to_bytes(partitioner.get_token(*_schema, last_base_pk));
@@ -988,6 +1002,10 @@ dht::partition_range_vector indexed_table_select_statement::get_partition_ranges
         throw exceptions::invalid_request_exception("Indexed column not found in schema");
     }
 
+    if (should_use_open_ended_index_range(_used_index_restrictions)) {
+        partition_ranges.emplace_back(dht::partition_range::make_open_ended_both_sides());
+        return partition_ranges;
+    }
     bytes_opt value = _used_index_restrictions->value_for(*cdef, options);
     if (value) {
         auto pk = partition_key::from_single_value(*_view_schema, *value);
@@ -1040,6 +1058,10 @@ query::partition_slice indexed_table_select_statement::get_partition_slice_for_l
     clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(_view_schema, true);
     const column_definition* cdef = _schema->get_column_definition(to_bytes(_index.target_column()));
 
+    if (should_use_open_ended_index_range(_used_index_restrictions)) {
+        partition_slice_builder.with_ranges({query::clustering_range::make_open_ended_both_sides()});
+        return partition_slice_builder.build();
+    }
     bytes_opt value = _used_index_restrictions->value_for(*cdef, options);
     if (value) {
         const column_definition* view_cdef = _view_schema->get_column_definition(to_bytes(_index.target_column()));
