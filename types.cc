@@ -1212,6 +1212,27 @@ auto collection_type_impl::deserialize_mutation_form(bytes_view in) const -> mut
     return ret;
 }
 
+std::optional<atomic_cell_view> collection_type_impl::deserialize_single_value(bytes_view in, bytes_view wanted_key) const {
+    auto has_tomb = read_simple<bool>(in);
+    if (has_tomb) {
+        in.remove_prefix(sizeof(api::timestamp_type) + sizeof(gc_clock::duration::rep));
+    }
+    auto nr = read_simple<uint32_t>(in);
+    for (uint32_t i = 0; i != nr; ++i) {
+        // FIXME: we could probably avoid the need for size
+        auto ksize = read_simple<uint32_t>(in);
+        auto key = read_simple_bytes(in, ksize);
+        auto vsize = read_simple<uint32_t>(in);
+        if (key == wanted_key) {
+            auto value = atomic_cell_view::from_bytes(value_comparator()->imr_state().type_info(), read_simple_bytes(in, vsize));
+            return value.is_live() ? std::optional<atomic_cell_view>(std::move(value)) : std::nullopt;
+        } else {
+            in.remove_prefix(vsize);
+        }
+    }
+    return {};
+}
+
 bool collection_type_impl::is_empty(collection_mutation_view cm) const {
   return cm.data.with_linearized([&] (bytes_view in) { // FIXME: we can guarantee that this is in the first fragment
     auto has_tomb = read_simple<bool>(in);

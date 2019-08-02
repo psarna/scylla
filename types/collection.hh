@@ -68,6 +68,7 @@ public:
     static bytes pack(BytesViewIterator start, BytesViewIterator finish, int elements, cql_serialization_format sf);
     // requires linearized collection_mutation_view, lifetime
     mutation_view deserialize_mutation_form(bytes_view in) const;
+    std::optional<atomic_cell_view> deserialize_single_value(bytes_view in, bytes_view wanted_key) const;
     bool is_empty(collection_mutation_view in) const;
     bool is_any_live(collection_mutation_view in, tombstone tomb = tombstone(), gc_clock::time_point now = gc_clock::time_point::min()) const;
     api::timestamp_type last_update(collection_mutation_view in) const;
