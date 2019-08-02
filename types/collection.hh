@@ -54,6 +54,7 @@ public:
         return deserialize(v, sf);
     }
     bytes_opt reserialize(cql_serialization_format from, cql_serialization_format to, bytes_view_opt v) const;
+    std::optional<atomic_cell_view> deserialize_single_cell(bytes_view in, bytes_view wanted_key) const;
 };
 
 // a list or a set
