@@ -1483,7 +1483,10 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, db::timeout_
     if (cf.views().empty()) {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout).finally([op = std::move(op)] { });
     }
-    future<row_locker::lock_holder> f = cf.push_view_replica_updates(s, m, timeout);
+    // Pushing view replica updates may involve calling database::apply(), which is under the same execution stage.
+    // In order to avoid bombarding the execution stage queue with recursive calls, pushing view replica updates
+    // is forced to yield the processor first and never be called immediately.
+    future<row_locker::lock_holder> f = later().then([s, &m, &cf, timeout] { return cf.push_view_replica_updates(s, m, timeout); });
     return f.then([this, s = std::move(s), uuid = std::move(uuid), &m, timeout, &cf, op = std::move(op)] (row_locker::lock_holder lock) mutable {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout).finally(
                 // Hold the local lock on the base-table partition or row
