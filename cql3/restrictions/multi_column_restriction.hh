@@ -53,7 +53,7 @@ namespace cql3 {
 
 namespace restrictions {
 
-class multi_column_restriction : public clustering_key_restrictions {
+class multi_column_restriction : public restriction {
 private:
     bool _has_only_asc_columns;
     bool _has_only_desc_columns;
@@ -61,19 +61,24 @@ protected:
     schema_ptr _schema;
     std::vector<const column_definition*> _column_defs;
 public:
+    using bounds_range_type = clustering_key_restrictions::bounds_range_type;
+
     multi_column_restriction(op op, schema_ptr schema, std::vector<const column_definition*>&& defs)
-        : clustering_key_restrictions(op, target::MULTIPLE_COLUMNS)
+        : restriction(op, target::MULTIPLE_COLUMNS)
         , _schema(schema)
         , _column_defs(std::move(defs))
     {
         update_asc_desc_existence();
     }
 
-    virtual std::vector<const column_definition*> get_column_defs() const override {
+    virtual std::vector<clustering_key_prefix> values_as_keys(const query_options& options) const = 0;
+    virtual std::vector<bounds_range_type> bounds_ranges(const query_options& options) const = 0;
+
+    virtual std::vector<const column_definition*> get_column_defs() const {
         return _column_defs;
     }
 
-    virtual std::vector<bytes_opt> values(const query_options& options) const override  {
+    virtual std::vector<bytes_opt> values(const query_options& options) const {
         auto src = values_as_keys(options);
         std::vector<bytes_opt> res;
         for (const clustering_key_prefix& r : src) {
@@ -87,7 +92,7 @@ public:
     virtual void merge_with(::shared_ptr<restriction> other) override {
         statements::request_validations::check_true(other->is_multi_column(),
             "Mixing single column relations and multi column relations on clustering columns is not allowed");
-        auto as_pkr = static_pointer_cast<clustering_key_restrictions>(other);
+        auto as_pkr = static_pointer_cast<multi_column_restriction>(other);
         do_merge_with(as_pkr);
         update_asc_desc_existence();
     }
@@ -108,7 +113,7 @@ public:
     }
 
 protected:
-    virtual void do_merge_with(::shared_ptr<clustering_key_restrictions> other) = 0;
+    virtual void do_merge_with(::shared_ptr<multi_column_restriction> other) = 0;
 
     /**
      * Returns the names of the columns that are specified within this <code>Restrictions</code> and the other one
@@ -118,7 +123,7 @@ protected:
      * @return the names of the columns that are specified within this <code>Restrictions</code> and the other one
      * as a comma separated <code>String</code>.
      */
-    sstring get_columns_in_commons(::shared_ptr<restrictions> other) const {
+    sstring get_columns_in_commons(::shared_ptr<multi_column_restriction> other) const {
         auto ours = get_column_defs();
         auto theirs = other->get_column_defs();
 
@@ -229,7 +234,7 @@ public:
         return format("EQ({})", _value->to_string());
     }
 
-    virtual void do_merge_with(::shared_ptr<clustering_key_restrictions> other) override {
+    virtual void do_merge_with(::shared_ptr<multi_column_restriction> other) override {
         throw exceptions::invalid_request_exception(format("{} cannot be restricted by more than one relation if it includes an Equal",
             get_columns_in_commons(other)));
     }
@@ -347,7 +352,7 @@ public:
     }
 #endif
 
-    virtual void do_merge_with(::shared_ptr<clustering_key_restrictions> other) override {
+    virtual void do_merge_with(::shared_ptr<multi_column_restriction> other) override {
         throw exceptions::invalid_request_exception(format("{} cannot be restricted by more than one relation if it includes a IN",
                                                            get_columns_in_commons(other)));
     }
@@ -502,7 +507,7 @@ public:
         return _slice.is_inclusive(b);
     }
 
-    virtual void do_merge_with(::shared_ptr<clustering_key_restrictions> other) override {
+    virtual void do_merge_with(::shared_ptr<multi_column_restriction> other) override {
         using namespace statements::request_validations;
         check_true(other->is_slice(),
                    "Column \"%s\" cannot be restricted by both an equality and an inequality relation",
@@ -690,7 +695,7 @@ private:
      * @param options - the query options
      * @return set of restrictions which their ranges union is logically identical to this restriction.
      */
-    std::vector<::shared_ptr<clustering_key_restrictions>>
+    std::vector<restriction_shared_ptr>
     build_mixed_order_restriction_set(const query_options& options) const {
         std::vector<restriction_shared_ptr> ret;
         auto start_components = read_bound_components(options, statements::bound::START);
@@ -715,7 +720,9 @@ private:
         if (!first_neq_component && start_inclusive && end_inclusive) {
             // This is a simple equality case
             shared_ptr<cql3::term> term = ::make_shared<cql3::tuples::value>(start_components);
-            ret.emplace_back(::make_shared<cql3::restrictions::multi_column_restriction::EQ>(_schema, _column_defs, term));
+            auto ck_restrictions = ::make_shared<clustering_key_restrictions>();
+            ck_restrictions->merge_with(::make_shared<cql3::restrictions::multi_column_restriction::EQ>(_schema, _column_defs, term));
+            ret.emplace_back(std::move(ck_restrictions));
             return ret;
         } else if (!first_neq_component) {
             // This is a contradiction case

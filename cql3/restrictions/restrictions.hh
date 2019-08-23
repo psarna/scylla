@@ -58,8 +58,8 @@ namespace restrictions {
  * Sets of restrictions
  */
 class restrictions {
+    using op_enum = restriction::op_enum;
 protected:
-    using op_enum = super_enum<restriction::op, restriction::op::EQ, restriction::op::SLICE, restriction::op::IN, restriction::op::CONTAINS, restriction::op::LIKE>;
     enum_set<op_enum> _ops;
 public:
     virtual ~restrictions() {}
@@ -75,6 +75,8 @@ public:
     virtual bytes_opt value_for(const column_definition& cdef, const query_options& options) const {
         throw exceptions::invalid_request_exception("Single value can be obtained from single-column restrictions only");
     }
+
+    virtual void merge_with(::shared_ptr<restriction> other) = 0;
 
     /**
      * Returns <code>true</code> if one of the restrictions use the specified function.

@@ -117,18 +117,18 @@ public:
 template<>
 ::shared_ptr<primary_key_restrictions<partition_key>>
 statement_restrictions::initial_key_restrictions<partition_key>::merge_to(schema_ptr schema, ::shared_ptr<restriction> restriction) {
-    if (restriction->is_on_token()) {
-        return static_pointer_cast<token_restriction>(restriction);
-    }
+    //FIXME(sarna): This is useless now: if (restriction->is_on_token()) {
+    //    return static_pointer_cast<token_restriction>(restriction);
+    //}
     return do_merge_to(std::move(schema), std::move(restriction));
 }
 
 template<>
 ::shared_ptr<primary_key_restrictions<clustering_key_prefix>>
 statement_restrictions::initial_key_restrictions<clustering_key_prefix>::merge_to(schema_ptr schema, ::shared_ptr<restriction> restriction) {
-    if (restriction->is_multi_column()) {
-        return static_pointer_cast<primary_key_restrictions<clustering_key_prefix>>(restriction);
-    }
+    //FIXME(sarna): This is also useless: if (restriction->is_multi_column()) {
+    //    return static_pointer_cast<primary_key_restrictions<clustering_key_prefix>>(restriction);
+    //}
     return do_merge_to(std::move(schema), std::move(restriction));
 }
 

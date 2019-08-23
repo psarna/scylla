@@ -153,7 +153,7 @@ public:
                 }
             }
         }
-        restriction::_ops.add(restriction->get_ops());
+        restrictions::_ops.add(restriction->get_ops());
         _restrictions->add_restriction(restriction);
     }
 

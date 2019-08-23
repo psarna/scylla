@@ -55,18 +55,20 @@ namespace restrictions {
 /**
  * <code>Restriction</code> using the token function.
  */
-class token_restriction: public partition_key_restrictions {
+class token_restriction: public restriction {
 private:
     /**
      * The definition of the columns to which apply the token restriction.
      */
     std::vector<const column_definition *> _column_definitions;
 public:
-    token_restriction(op op, std::vector<const column_definition *> c)
-            : partition_key_restrictions(op, target::TOKEN), _column_definitions(std::move(c)) {
+    using target = restriction::target;
+    using bounds_range_type = partition_key_restrictions::bounds_range_type;
+    token_restriction(restriction::op op, std::vector<const column_definition *> c)
+            : restriction(op, target::TOKEN), _column_definitions(std::move(c)) {
     }
 
-    std::vector<const column_definition*> get_column_defs() const override {
+    std::vector<const column_definition*> get_column_defs() const {
         return _column_definitions;
     }
 
@@ -81,11 +83,7 @@ public:
     }
 #endif
 
-    std::vector<partition_key> values_as_keys(const query_options& options) const override {
-        throw exceptions::unsupported_operation_exception();
-    }
-
-    std::vector<bounds_range_type> bounds_ranges(const query_options& options) const override {
+    std::vector<bounds_range_type> bounds_ranges(const query_options& options) const {
         auto get_token_bound = [this, &options](statements::bound b) {
             if (!has_bound(b)) {
                 return is_start(b) ? dht::minimum_token() : dht::maximum_token();

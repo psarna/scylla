@@ -63,24 +63,88 @@ namespace restrictions {
  * implementations of methods).
  */
 
-class partition_key_restrictions: public restriction, public restrictions, public enable_shared_from_this<partition_key_restrictions> {
+class partition_key_restrictions: public restrictions, public enable_shared_from_this<partition_key_restrictions> {
+protected:
+    using target = restriction::target;
+    using op = restriction::op;
+    target _target = target::SINGLE_COLUMN;
 public:
     using bounds_range_type = dht::partition_range;
 
     partition_key_restrictions() = default;
-    partition_key_restrictions(op op, target target) : restriction(op, target) {}
+    partition_key_restrictions(target target) : _target(target) {}
 
     virtual ::shared_ptr<partition_key_restrictions> merge_to(schema_ptr, ::shared_ptr<restriction> restriction) {
         merge_with(restriction);
         return this->shared_from_this();
     }
 
-    virtual std::vector<partition_key> values_as_keys(const query_options& options) const = 0;
-    virtual std::vector<bounds_range_type> bounds_ranges(const query_options& options) const = 0;
+    virtual std::vector<partition_key> values_as_keys(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bounds_range_type> bounds_ranges(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual void merge_with(::shared_ptr<restriction> other) override {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool uses_function(const sstring& ks_name, const sstring& function_name) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool has_supporting_index(const secondary_index::secondary_index_manager& index_manager, allow_local_index allow_local) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool has_bound(statements::bound b) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool is_inclusive(statements::bound b) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bytes_opt> bounds(statements::bound b, const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual sstring to_string() const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool is_satisfied_by(const schema& schema,
+                                     const partition_key& key,
+                                     const clustering_key_prefix& ckey,
+                                     const row& cells,
+                                     const query_options& options,
+                                     gc_clock::time_point now) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bytes_opt> values(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
 
-    using restrictions::uses_function;
-    using restrictions::has_supporting_index;
-    using restrictions::values;
+    bool is_on_token() const {
+        return _target == target::TOKEN;
+    }
+
+    bool is_multi_column() const {
+        return _target == target::MULTIPLE_COLUMNS;
+    }
+
+    bool is_slice() const {
+        return _ops.contains(op::SLICE);
+    }
+
+    bool is_EQ() const {
+        return _ops.contains(op::EQ);
+    }
+
+    bool is_IN() const {
+        return _ops.contains(op::IN);
+    }
+
+    bool is_contains() const {
+        return _ops.contains(op::CONTAINS);
+    }
+
+    bool is_LIKE() const {
+        return _ops.contains(op::LIKE);
+    }
 
     bool empty() const override {
         return get_column_defs().empty();
@@ -117,24 +181,96 @@ public:
     }
 };
 
-class clustering_key_restrictions : public restriction, public restrictions, public enable_shared_from_this<clustering_key_restrictions> {
+class clustering_key_restrictions : public restrictions, public enable_shared_from_this<clustering_key_restrictions> {
+protected:
+    using target = restriction::target;
+    using op = restriction::op;
+    target _target = target::SINGLE_COLUMN;
 public:
     using bounds_range_type = query::clustering_range;
 
     clustering_key_restrictions() = default;
-    clustering_key_restrictions(op op, target target) : restriction(op, target) {}
+    clustering_key_restrictions(target target) : _target(target) {}
 
     virtual ::shared_ptr<clustering_key_restrictions> merge_to(schema_ptr, ::shared_ptr<restriction> restriction) {
         merge_with(restriction);
         return this->shared_from_this();
     }
 
-    virtual std::vector<clustering_key> values_as_keys(const query_options& options) const = 0;
-    virtual std::vector<bounds_range_type> bounds_ranges(const query_options& options) const = 0;
+    virtual std::vector<const column_definition*> get_column_defs() const {
+        throw std::logic_error("Raw clustering column restrictions do not have column definitions");
+    }
+
+    virtual std::vector<clustering_key> values_as_keys(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bounds_range_type> bounds_ranges(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual void merge_with(::shared_ptr<restriction> other) override {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool uses_function(const sstring& ks_name, const sstring& function_name) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool has_supporting_index(const secondary_index::secondary_index_manager& index_manager, allow_local_index allow_local) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool has_bound(statements::bound b) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool is_inclusive(statements::bound b) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bytes_opt> bounds(statements::bound b, const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual sstring to_string() const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual bool is_satisfied_by(const schema& schema,
+                                     const partition_key& key,
+                                     const clustering_key_prefix& ckey,
+                                     const row& cells,
+                                     const query_options& options,
+                                     gc_clock::time_point now) const {
+        throw std::runtime_error("unreachable 42");
+    }
+    virtual std::vector<bytes_opt> values(const query_options& options) const {
+        throw std::runtime_error("unreachable 42");
+    }
 
     using restrictions::uses_function;
     using restrictions::has_supporting_index;
     using restrictions::values;
+
+    bool is_on_token() const {
+        return _target == target::TOKEN;
+    }
+
+    bool is_multi_column() const {
+        return _target == target::MULTIPLE_COLUMNS;
+    }
+
+    bool is_slice() const {
+        return _ops.contains(op::SLICE);
+    }
+
+    bool is_EQ() const {
+        return _ops.contains(op::EQ);
+    }
+
+    bool is_IN() const {
+        return _ops.contains(op::IN);
+    }
+
+    bool is_contains() const {
+        return _ops.contains(op::CONTAINS);
+    }
+
+    bool is_LIKE() const {
+        return _ops.contains(op::LIKE);
+    }
 
     bool empty() const override {
         return get_column_defs().empty();

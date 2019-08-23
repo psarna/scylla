@@ -69,8 +69,8 @@ public:
     enum class target {
         SINGLE_COLUMN, MULTIPLE_COLUMNS, TOKEN
     };
-protected:
     using op_enum = super_enum<restriction::op, restriction::op::EQ, restriction::op::SLICE, restriction::op::IN, restriction::op::CONTAINS, restriction::op::LIKE>;
+protected:
     enum_set<op_enum> _ops;
     target _target = target::SINGLE_COLUMN;
 public:
@@ -190,7 +190,6 @@ public:
                                  const query_options& options,
                                  gc_clock::time_point now) const = 0;
 
-protected:
     /**
      * Checks if the specified term is using the specified function.
      *
