@@ -28,6 +28,7 @@
 #include <boost/algorithm/string/classification.hpp>
 #include "error.hh"
 #include "rjson.hh"
+#include "auth.hh"
 
 static logging::logger slogger("alternator-server");
 
@@ -107,6 +108,50 @@ protected:
     sstring _type;
 };
 
+static void handle_signature(request& req) {
+    slogger.warn("Headers:");
+    for (auto x : req._headers) {
+        slogger.warn("\t{} {}", x.first, x.second);
+    }
+    slogger.warn("Content: <{}>", req.content);
+
+    sstring host = req._headers["Host"]; // fixme: do we need to split port out?
+    std::vector<sstring> credentials_raw = split(req._headers["Authorization"], " ");
+    sstring credential;
+    sstring orig_signature;
+    // fixme: don't ignore signed headers, we need to take it into account actually and add only the signed ones in get_signature()
+    for (sstring& entry : credentials_raw) {
+        std::vector<sstring> entry_split = split(entry, "="); // fixme: error handling
+        if (entry_split[0] == "Credential") {
+            credential = entry_split[1];
+        } else if (entry_split[0] == "Signature") {
+            orig_signature = entry_split[1];
+        }
+    }
+    slogger.warn("Credential {} Signature {}", credential, orig_signature);
+    std::vector<sstring> credential_split = split(credential, "/");
+    std::string_view user(credential_split[0]);
+    std::string_view datestamp(credential_split[1]); //fixme: use to check if not expired
+    std::string_view region(credential_split[2]);
+    std::string_view service(credential_split[3]);
+
+    slogger.warn("user {} ds {} region {} service {}", user, datestamp, region, service);
+
+    const sstring& content_type = req._headers["Content-Type"];
+    const sstring& amz_date = req._headers["X-Amz-Date"];
+    const sstring& amz_target = req._headers["X-Amz-Target"];
+
+    //fixme: accept only sha256 algoruthn for simplicity
+
+    slogger.warn("CONTENT {} DATE {} TARGET {}", content_type, amz_date, amz_target);
+
+    std::string signature = get_signature(user, std::string_view(host), "POST", std::string_view(content_type), req.content,
+            region, service, "", std::string_view(amz_target), std::string_view(amz_date));
+    slogger.warn("COMPUTED SIGNATURE: {}", signature);
+    slogger.warn("ORIG SIGNATURE: {}", orig_signature);
+
+}
+
 void server::set_routes(routes& r) {
     using alternator_callback = std::function<future<json::json_return_type>(executor&, executor::client_state&, std::unique_ptr<request>)>;
     std::unordered_map<std::string, alternator_callback> routes{
@@ -134,6 +179,7 @@ void server::set_routes(routes& r) {
         //NOTICE(sarna): Target consists of Dynamo API version folllowed by a dot '.' and operation type (e.g. CreateTable)
         sstring op = split_target.empty() ? sstring() : split_target.back();
         slogger.trace("Request: {} {}", op, req->content);
+        handle_signature(*req);
         auto callback_it = routes.find(op);
         if (callback_it == routes.end()) {
             _executor.local()._stats.unsupported_operations++;
@@ -158,6 +204,7 @@ future<> server::init(net::inet_address addr, std::optional<uint16_t> port, std:
         return make_exception_future<>(std::runtime_error("Either regular port or TLS port"
                 " must be specified in order to init an alternator HTTP server instance"));
     }
+
     return _executor.invoke_on_all([] (executor& e) {
             e.start().get();
     }).then([this, addr, port, tls_port, creds] {
