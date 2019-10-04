@@ -783,6 +783,7 @@ alternator = [
        Antlr3Grammar('alternator/expressions.g'),
        'alternator/conditions.cc',
        'alternator/rjson.cc',
+       'alternator/auth.cc',
 ]
 
 idls = ['idl/gossip_digest.idl.hh',
@@ -1172,7 +1173,7 @@ def configure_zstd(build_dir, mode):
 args.user_cflags += " " + pkg_config('jsoncpp', '--cflags')
 args.user_cflags += ' -march=' + args.target
 libs = ' '.join([maybe_static(args.staticyamlcpp, '-lyaml-cpp'), '-latomic', '-llz4', '-lz', '-lsnappy', pkg_config('jsoncpp', '--libs'),
-                 ' -lstdc++fs', ' -lcrypt', ' -lcryptopp', ' -lpthread',
+                 ' -lstdc++fs', ' -lcrypt', ' -lcryptopp', ' -lpthread', '-lcrypto',
                  maybe_static(args.staticboost, '-lboost_date_time -lboost_regex -licuuc'), ])
 
 xxhash_dir = 'xxHash'
