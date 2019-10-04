@@ -24,8 +24,6 @@
 #include <seastar/http/function_handlers.hh>
 #include <seastar/json/json_elements.hh>
 #include <seastarx.hh>
-#include <boost/algorithm/string/split.hpp>
-#include <boost/algorithm/string/classification.hpp>
 #include "error.hh"
 #include "rjson.hh"
 
@@ -37,12 +35,23 @@ namespace alternator {
 
 static constexpr auto TARGET = "X-Amz-Target";
 
-inline std::vector<sstring> split(const sstring& text, const char* separator) {
+inline std::vector<std::string_view> split(std::string_view text, char separator) {
     if (text == "") {
-        return std::vector<sstring>();
+        return std::vector<std::string_view>();
     }
-    std::vector<sstring> tokens;
-    return boost::split(tokens, text, boost::is_any_of(separator));
+
+    std::vector<std::string_view> tokens;
+    std::string_view::size_type it = 0;
+    while (it != std::string_view::npos) {
+        it = text.find_first_of(separator);
+        if (it != std::string_view::npos) {
+            tokens.emplace_back(text.data(), it);
+            text.remove_prefix(it + 1);
+        } else {
+            tokens.emplace_back(text);
+        }
+    }
+    return tokens;
 }
 
 // DynamoDB HTTP error responses are structured as follows
@@ -109,7 +118,7 @@ protected:
 
 void server::set_routes(routes& r) {
     using alternator_callback = std::function<future<json::json_return_type>(executor&, executor::client_state&, std::unique_ptr<request>)>;
-    std::unordered_map<std::string, alternator_callback> routes{
+    std::unordered_map<std::string_view, alternator_callback> routes{
         {"CreateTable", [] (executor& e, executor::client_state& client_state, std::unique_ptr<request> req) {
             return e.maybe_create_keyspace().then([&e, &client_state, req = std::move(req)] { return e.create_table(client_state, req->content); }); }
         },
@@ -130,9 +139,9 @@ void server::set_routes(routes& r) {
     api_handler* handler = new api_handler([this, routes = std::move(routes)](std::unique_ptr<request> req) -> future<json::json_return_type> {
         _executor.local()._stats.total_operations++;
         sstring target = req->get_header(TARGET);
-        std::vector<sstring> split_target = split(target, ".");
+        std::vector<std::string_view> split_target = split(target, '.');
         //NOTICE(sarna): Target consists of Dynamo API version folllowed by a dot '.' and operation type (e.g. CreateTable)
-        sstring op = split_target.empty() ? sstring() : split_target.back();
+        std::string_view op = split_target.empty() ? std::string_view() : split_target.back();
         slogger.trace("Request: {} {}", op, req->content);
         auto callback_it = routes.find(op);
         if (callback_it == routes.end()) {
@@ -145,7 +154,7 @@ void server::set_routes(routes& r) {
         return do_with(std::make_unique<executor::client_state>(executor::client_state::internal_tag()), [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] (std::unique_ptr<executor::client_state>& client_state) mutable {
             client_state->set_raw_keyspace(executor::KEYSPACE_NAME);
             executor::maybe_trace_query(*client_state, op, req->content);
-            tracing::trace(client_state->get_trace_state(), op);
+            tracing::trace(client_state->get_trace_state(), op.data());
             return callback_it->second(_executor.local(), *client_state, std::move(req));
         });
     });
