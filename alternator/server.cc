@@ -26,6 +26,8 @@
 #include <seastarx.hh>
 #include "error.hh"
 #include "rjson.hh"
+#include "auth.hh"
+#include <cctype>
 
 static logging::logger slogger("alternator-server");
 
@@ -116,6 +118,72 @@ protected:
     sstring _type;
 };
 
+static void verify_signature(request& req) {
+    sstring host = req._headers["Host"];
+    std::vector<std::string_view> credentials_raw = split(req._headers.at("Authorization"), ' ');
+    std::string credential;
+    std::string user_signature;
+    std::string signed_headers_str;
+    std::vector<std::string_view> signed_headers;
+    for (std::string_view entry : credentials_raw) {
+        std::vector<std::string_view> entry_split = split(entry, '=');
+        if (entry_split.size() != 2) {
+            if (entry != "AWS4-HMAC-SHA256") {
+                throw api_error("InvalidSignatureException", format("Only AWS4-HMAC-SHA256 algorithm is supported. Found: {}", entry));
+            }
+            continue;
+        }
+        std::string_view auth_value = entry_split[1];
+        // Commas appear as an additional (quite redundant) delimiter
+        if (auth_value.back() == ',') {
+            auth_value.remove_suffix(1);
+        }
+        if (entry_split[0] == "Credential") {
+            credential = std::string(auth_value);
+        } else if (entry_split[0] == "Signature") {
+            user_signature = std::string(auth_value);
+        } else if (entry_split[0] == "SignedHeaders") {
+            // Assume that signed headers are already sorted, as drivers usually do.
+            // Without it, we'd have to check and sort if they are not canonically sorted.
+            signed_headers_str = std::string(auth_value);
+            signed_headers = split(auth_value, ';');
+        }
+    }
+    std::vector<std::string_view> credential_split = split(credential, '/');
+    if (credential_split.size() != 5) {
+        throw api_error("ValidationException", format("Incorrect credential information format: {}", credential));
+    }
+    std::string_view user(credential_split[0]);
+    //FIXME: use the datestamp to check if the authorization signature has not expired,
+    // the default expiration period seems to be 5min.
+    std::string_view datestamp(credential_split[1]);
+    std::string_view region(credential_split[2]);
+    std::string_view service(credential_split[3]);
+
+    std::map<std::string_view, std::string_view> signed_headers_map;
+    for (const auto& header : signed_headers) {
+        signed_headers_map.emplace(header, std::string_view());
+    }
+    for (auto& header : req._headers) {
+        std::string header_str;
+        header_str.resize(header.first.size());
+        std::transform(header.first.begin(), header.first.end(), header_str.begin(), ::tolower);
+        auto it = signed_headers_map.find(header_str);
+        if (it != signed_headers_map.end()) {
+            it->second = std::string_view(header.second);
+        }
+    }
+
+    //FIXME: We need a proper way of providing the secret access key
+    std::string secret_access_key = "whatever";
+    std::string signature = get_signature(user, secret_access_key, std::string_view(host), req._method,
+            signed_headers_str, signed_headers_map, req.content, region, service, "");
+
+    if (signature != std::string_view(user_signature)) {
+        throw api_error("UnrecognizedClientException", "The security token included in the request is invalid.");
+    }
+}
+
 void server::set_routes(routes& r) {
     using alternator_callback = std::function<future<json::json_return_type>(executor&, executor::client_state&, std::unique_ptr<request>)>;
     std::unordered_map<std::string_view, alternator_callback> routes{
@@ -143,6 +211,7 @@ void server::set_routes(routes& r) {
         //NOTICE(sarna): Target consists of Dynamo API version folllowed by a dot '.' and operation type (e.g. CreateTable)
         std::string_view op = split_target.empty() ? std::string_view() : split_target.back();
         slogger.trace("Request: {} {}", op, req->content);
+        verify_signature(*req);
         auto callback_it = routes.find(op);
         if (callback_it == routes.end()) {
             _executor.local()._stats.unsupported_operations++;
