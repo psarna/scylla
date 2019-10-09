@@ -94,8 +94,7 @@ public:
     }
 
     virtual bool needs_filtering(const schema& schema) const {
-        return !empty() && !is_on_token() &&
-                (has_unrestricted_components(schema) || is_contains() || is_slice() || is_LIKE());
+        return !empty() && (has_unrestricted_components(schema) || is_contains() || is_slice() || is_LIKE());
     }
 
     // NOTICE(sarna): This function is useless for partition key restrictions,

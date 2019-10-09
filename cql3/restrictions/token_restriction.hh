@@ -45,6 +45,7 @@
 #include "exceptions/exceptions.hh"
 #include "term_slice.hh"
 #include "keys.hh"
+#include "single_column_primary_key_restrictions.hh"
 
 class column_definition;
 
@@ -74,6 +75,10 @@ public:
         return false;
     }
 
+    virtual bool needs_filtering(const schema& s) const override {
+        return false;
+    }
+
 #if 0
     void add_index_expression_to(std::vector<::shared_ptr<index_expression>>& expressions,
                                          const query_options& options) override {
@@ -84,6 +89,8 @@ public:
     std::vector<partition_key> values_as_keys(const query_options& options) const override {
         throw exceptions::unsupported_operation_exception();
     }
+
+    ::shared_ptr<partition_key_restrictions> merge_to(schema_ptr s, ::shared_ptr<restriction> restriction) override;
 
     std::vector<bounds_range_type> bounds_ranges(const query_options& options) const override {
         auto get_token_bound = [this, &options](statements::bound b) {
@@ -209,6 +216,7 @@ public:
     bool is_inclusive(statements::bound b) const override {
         return _slice.is_inclusive(b);
     }
+
     void merge_with(::shared_ptr<restriction> restriction) override {
         try {
             if (!restriction->is_on_token()) {
@@ -248,6 +256,54 @@ public:
                                  const row& cells,
                                  const query_options& options,
                                  gc_clock::time_point now) const override;
+};
+
+class extended_token_restriction : public partition_key_restrictions {
+    ::shared_ptr<token_restriction> _token_restriction;
+    ::shared_ptr<single_column_partition_key_restrictions> _non_token_restrictions;
+public:
+    extended_token_restriction(::shared_ptr<token_restriction> token_restriction) : _token_restriction(token_restriction) {
+        //FIXME(sarna): target
+        restriction::_target = restriction::target::TOKEN;
+    }
+
+    ::shared_ptr<partition_key_restrictions> merge_to(schema_ptr s, ::shared_ptr<restriction> restriction) override;
+
+    void merge_with(::shared_ptr<restriction> restriction) override {
+        throw exceptions::unsupported_operation_exception();
+    }
+
+    std::vector<const column_definition*> get_column_defs() const override {
+        // Token restriction will return all partition key columns, so it's a superset of non token restriction pk columns
+        return _token_restriction->get_column_defs();
+    }
+
+    virtual bool has_supporting_index(const secondary_index::secondary_index_manager& index_manager, allow_local_index allow_local) const override {
+        return false;
+    }
+
+    std::vector<partition_key> values_as_keys(const query_options& options) const override {
+        throw exceptions::unsupported_operation_exception();
+    }
+
+    std::vector<bounds_range_type> bounds_ranges(const query_options& options) const override {
+        return _token_restriction->bounds_ranges(options);
+    }
+
+    bool uses_function(const sstring& ks_name, const sstring& function_name) const override;
+    std::vector<bytes_opt> values(const query_options& options) const override;
+    sstring to_string() const override;
+    virtual bool needs_filtering(const schema& schema) const override {
+        return true;
+    }
+    virtual bool is_satisfied_by(const schema& schema,
+                                 const partition_key& key,
+                                 const clustering_key_prefix& ckey,
+                                 const row& cells,
+                                 const query_options& options,
+                                 gc_clock::time_point now) const override;
+
+    const single_column_restrictions::restrictions_map& get_single_column_partition_key_restrictions() const;
 };
 
 }

@@ -478,7 +478,9 @@ dht::partition_range_vector statement_restrictions::get_partition_key_ranges(con
     if (_partition_key_restrictions->empty()) {
         return {dht::partition_range::make_open_ended_both_sides()};
     }
-    if (_partition_key_restrictions->needs_filtering(*_schema)) {
+    // If token restrictions are included in the restrictions, we should not use an open ended range
+    rlogger.warn(" on token ? {}, needs ? {}", _partition_key_restrictions->is_on_token(), _partition_key_restrictions->needs_filtering(*_schema));
+    if (!_partition_key_restrictions->is_on_token() && _partition_key_restrictions->needs_filtering(*_schema)) {
         return {dht::partition_range::make_open_ended_both_sides()};
     }
     return _partition_key_restrictions->bounds_ranges(options);
@@ -536,11 +538,17 @@ const single_column_restrictions::restrictions_map& statement_restrictions::get_
     static single_column_restrictions::restrictions_map empty;
     auto single_restrictions = dynamic_pointer_cast<single_column_partition_key_restrictions>(_partition_key_restrictions);
     if (!single_restrictions) {
+        rlogger.warn("Not Single restrictions");
         if (dynamic_pointer_cast<initial_key_restrictions<partition_key>>(_partition_key_restrictions)) {
+            rlogger.warn("Initial restrictions");
             return empty;
+        } else if (auto extended_token_restr = dynamic_pointer_cast<extended_token_restriction>(_partition_key_restrictions)) {
+            rlogger.warn("Extended Single restrictions");
+            return extended_token_restr->get_single_column_partition_key_restrictions();
         }
         throw std::runtime_error("statement restrictions for multi-column partition key restrictions are not implemented yet");
     }
+    rlogger.warn("Single restrictions");
     return single_restrictions->restrictions();
 }
 
@@ -913,6 +921,57 @@ bool token_restriction::slice::is_satisfied_by(const schema& schema,
         }
     }
     return satisfied;
+}
+
+::shared_ptr<partition_key_restrictions> token_restriction::merge_to(schema_ptr s, ::shared_ptr<restriction> restriction) {
+    if (restriction->is_on_token()) {
+        return partition_key_restrictions::merge_to(s, restriction);
+    }
+    auto extended_token_restrictions = ::make_shared<extended_token_restriction>(static_pointer_cast<token_restriction>(shared_from_this()));
+    return extended_token_restrictions->merge_to(std::move(s), std::move(restriction));
+}
+
+::shared_ptr<partition_key_restrictions> extended_token_restriction::merge_to(schema_ptr s, ::shared_ptr<restriction> restriction) {
+    if (restriction->is_on_token()) {
+        _token_restriction = static_pointer_cast<token_restriction>(_token_restriction->merge_to(std::move(s), std::move(restriction)));
+    } else {
+        if (!_non_token_restrictions) {
+            _non_token_restrictions = ::make_shared<single_column_partition_key_restrictions>(s, true);
+        }
+        _non_token_restrictions = static_pointer_cast<single_column_partition_key_restrictions>(_non_token_restrictions->merge_to(std::move(s), std::move(restriction)));
+    }
+    return shared_from_this();
+}
+
+const single_column_restrictions::restrictions_map& extended_token_restriction::get_single_column_partition_key_restrictions() const {
+    static single_column_restrictions::restrictions_map empty;
+    auto single_restrictions = dynamic_pointer_cast<single_column_partition_key_restrictions>(_non_token_restrictions);
+    if (!single_restrictions) {
+        throw std::runtime_error("statement restrictions for multi-column partition key restrictions are not implemented yet");
+    }
+    return single_restrictions->restrictions();
+}
+
+bool extended_token_restriction::uses_function(const sstring& ks_name, const sstring& function_name) const {
+    return _token_restriction->uses_function(ks_name, function_name) || _non_token_restrictions->uses_function(ks_name, function_name);
+}
+
+std::vector<bytes_opt> extended_token_restriction::values(const query_options& options) const {
+    return _non_token_restrictions->values(options);
+}
+
+sstring extended_token_restriction::to_string() const  {
+    return format("{} AND {}", _token_restriction->to_string(), _non_token_restrictions->to_string());
+}
+
+bool extended_token_restriction::is_satisfied_by(const schema& schema,
+                             const partition_key& key,
+                             const clustering_key_prefix& ckey,
+                             const row& cells,
+                             const query_options& options,
+                             gc_clock::time_point now) const {
+    return _token_restriction->is_satisfied_by(schema, key, ckey, cells, options, now)
+            && _non_token_restrictions->is_satisfied_by(schema, key, ckey, cells, options, now);
 }
 
 bool single_column_restriction::LIKE::init_matcher(const query_options& options) const {
