@@ -48,3 +48,25 @@ to allow the alternator HTTPS server to think it's been authorized and properly 
 Still, boto3 library issues warnings that the certificate used for communication is self-signed,
 and thus should not be trusted. For the sake of running local tests this warning is explicitly ignored.
 
+## Authorization
+
+By default, boto3 prepares a properly signed Authorization header with every request.
+In order to confirm the authorization, the server recomputes the signature by using
+user credentials (user-provided username + a secret key known by the server),
+and then checks if it matches the signature from the header.
+Early alternator code did not verify signatures at all, which is also allowed by the protocol.
+A partial implementation of the authorization verification can be allowed by providing a Scylla
+configuration parameter:
+```yaml
+  alternator_enforce_authorization: true
+```
+The implementation is partial, because it is not backed by any real key store - instead, a rather unsafe
+hardcoded secret key: "whatever", is used for all usernames. Local tests are aware of this and currently
+provide this secret key manually when setting up the test:
+```python
+return boto3.resource('dynamodb', endpoint_url=local_url, verify=verify,
+    region_name='us-east-1', aws_access_key_id='whatever', aws_secret_access_key='whatever')
+```
+Most tests expect the authorization to succeed, so turning `alternator_enforce_authorization` on does not
+affect them. However, test cases from `test_authorization.py` may require this option to be turned on,
+so it's advised.
