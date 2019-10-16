@@ -62,6 +62,20 @@ static std::string apply_sha256(std::string_view msg) {
     return to_hex(hasher.finalize());
 }
 
+void check_expiry(std::string_view signature_date) {
+    time_t expiration_threshold = db_clock::to_time_t(db_clock::now() - 15min);
+    std::string expiration_str;
+    expiration_str.resize(17);
+    // strftime prints the terminating null character as well
+    std::strftime(expiration_str.data(), expiration_str.size(), "%Y%m%dT%H%M%SZ", std::gmtime(&expiration_threshold));
+    expiration_str.resize(16);
+    if (signature_date < expiration_str) {
+        throw api_error("InvalidSignatureException",
+                fmt::format("Signature expired: {} is now earlier than {} (current time - 15 min.)",
+                signature_date, expiration_str));
+    }
+}
+
 std::string get_signature(std::string_view access_key_id, std::string_view secret_access_key, std::string_view host, std::string_view method, std::string_view signed_headers_str,
         const std::map<std::string_view, std::string_view>& signed_headers_map, std::string_view body_content, std::string_view region, std::string_view service, std::string_view query_string) {
     auto amz_date_it = signed_headers_map.find("x-amz-date");
@@ -69,6 +83,7 @@ std::string get_signature(std::string_view access_key_id, std::string_view secre
         throw api_error("InvalidSignatureException", "X-Amz-Date header is mandatory for signature verification");
     }
     std::string_view amz_date = amz_date_it->second;
+    check_expiry(amz_date);
     std::string_view datestamp = amz_date.substr(0, 8);
     std::string_view canonical_uri = "/";
 
