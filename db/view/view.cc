@@ -480,7 +480,9 @@ void create_virtual_column(schema_builder& builder, const bytes& name, const dat
 }
 
 static void add_cells_to_view(const schema& base, const schema& view, row base_cells, row& view_cells) {
+    vlogger.warn("adding cells to view");
     base_cells.for_each_cell([&] (column_id id, atomic_cell_or_collection& c) {
+        vlogger.warn("adding for {}", id);
         auto* view_col = view_column(base, view, id);
         if (view_col && !view_col->is_primary_key()) {
             maybe_make_virtual(c, view_col);
@@ -560,6 +562,8 @@ static bool atomic_cells_liveness_equal(atomic_cell_view left, atomic_cell_view 
 }
 
 bool view_updates::can_skip_view_updates(const clustering_row& update, const clustering_row& existing) const {
+    vlogger.warn("FIXME: NO YOU CANNOT");
+    return false;
     const row& existing_row = existing.cells();
     const row& updated_row = update.cells();
 
@@ -621,24 +625,27 @@ bool view_updates::can_skip_view_updates(const clustering_row& update, const clu
 void view_updates::update_entry(const partition_key& base_key, const clustering_row& update, const clustering_row& existing, gc_clock::time_point now) {
     // While we know update and existing correspond to the same view entry,
     // they may not match the view filter.
+    vlogger.warn("check empty key");
     if (is_partition_key_empty(*_base, *_view, base_key, existing) || !matches_view_filter(*_base, _view_info, base_key, existing, now)) {
         create_entry(base_key, update, now);
         return;
     }
+    vlogger.warn("check empty update");
     if (is_partition_key_empty(*_base, *_view, base_key, update) || !matches_view_filter(*_base, _view_info, base_key, update, now)) {
         do_delete_old_entry(base_key, existing, update, now);
         return;
     }
-
+    vlogger.warn("check skip");
     if (can_skip_view_updates(update, existing)) {
+        vlogger.warn("Can skip view updates! Yoohoo");
         return;
     }
-
+    vlogger.warn("generating view row");
     deletable_row& r = get_view_row(base_key, update);
     auto marker = compute_row_marker(update);
     r.apply(marker);
     r.apply(update.tomb());
-
+    vlogger.warn("will compute difference");
     auto diff = update.cells().difference(*_base, column_kind::regular_column, existing.cells());
     add_cells_to_view(*_base, *_view, std::move(diff), r.cells());
 }
@@ -654,13 +661,14 @@ void view_updates::generate_update(
     //      there is no corresponding entries.
     //   2) if there is a column not part of the base PK in the view PK, whether it is changed by the update.
     //   3) whether the update actually matches the view SELECT filter
-
+vlogger.warn("is full?");
     if (!update.key().is_full(*_base)) {
         return;
     }
 
     auto col_id = _view_info.base_non_pk_column_in_view_pk();
     if (!col_id) {
+        vlogger.warn("!col_id");
         // The view key is necessarily the same pre and post update.
         if (existing && existing->is_live(*_base)) {
             if (update.is_live(*_base)) {
@@ -678,16 +686,21 @@ void view_updates::generate_update(
     // Note: multi-cell columns can't be part of the primary key.
     auto& cdef = _base->regular_column_at(*col_id);
     if (existing) {
+        vlogger.warn("existing");
         auto* before = existing->cells().find_cell(*col_id);
+        vlogger.warn("before? {}; {}", bool(before), clustering_row::printer(*_base, *existing));
         if (before && before->as_atomic_cell(cdef).is_live()) {
             if (after && after->as_atomic_cell(cdef).is_live()) {
                 auto cmp = compare_atomic_cell_for_merge(before->as_atomic_cell(cdef), after->as_atomic_cell(cdef));
                 if (cmp == 0) {
+                    vlogger.warn("cmp 0");
                     update_entry(base_key, update, *existing, now);
                 } else {
+                    vlogger.warn("cmp !0, replace");
                     replace_entry(base_key, update, *existing, now);
                 }
             } else {
+                vlogger.warn("cmp delete");
                 delete_old_entry(base_key, *existing, update, now);
             }
             return;
@@ -816,11 +829,14 @@ static void apply_tracked_tombstones(range_tombstone_accumulator& tracker, clust
 future<stop_iteration> view_update_builder::on_results() {
     if (_update && !_update->is_end_of_partition() && _existing && !_existing->is_end_of_partition()) {
         int cmp = position_in_partition::tri_compare(*_schema)(_update->position(), _existing->position());
+        vlogger.warn("CMP = {}", cmp);
         if (cmp < 0) {
+            vlogger.warn("Lesser");
             // We have an update where there was nothing before
             if (_update->is_range_tombstone()) {
                 _update_tombstone_tracker.apply(std::move(_update->as_range_tombstone()));
             } else if (_update->is_clustering_row()) {
+                vlogger.warn("is clustrow");
                 auto& update = _update->as_mutable_clustering_row();
                 apply_tracked_tombstones(_update_tombstone_tracker, update);
                 auto tombstone = _existing_tombstone_tracker.current_tombstone();
@@ -829,14 +845,17 @@ future<stop_iteration> view_update_builder::on_results() {
                               : std::nullopt;
                 generate_update(std::move(update), std::move(existing));
             }
+            vlogger.warn("advancing existings0");
             return advance_updates();
         }
         if (cmp > 0) {
+            vlogger.warn("Greater");
             // We have something existing but no update (which will happen either because it's a range tombstone marker in
             // existing, or because we've fetched the existing row due to some partition/range deletion in the updates)
             if (_existing->is_range_tombstone()) {
                 _existing_tombstone_tracker.apply(std::move(_existing->as_range_tombstone()));
             } else if (_existing->is_clustering_row()) {
+                vlogger.warn("is clustering row");
                 auto& existing = _existing->as_mutable_clustering_row();
                 apply_tracked_tombstones(_existing_tombstone_tracker, existing);
                 auto tombstone = _update_tombstone_tracker.current_tombstone();
@@ -848,42 +867,53 @@ future<stop_iteration> view_update_builder::on_results() {
                     generate_update(std::move(update), { std::move(existing) });
                 }
             }
+            vlogger.warn("advancing existings");
             return advance_existings();
         }
         // We're updating a row that had pre-existing data
+        vlogger.warn("Updating preexisting data");
         if (_update->is_range_tombstone()) {
+            vlogger.warn("Range tombstone");
             assert(_existing->is_range_tombstone());
             _existing_tombstone_tracker.apply(std::move(*_existing).as_range_tombstone());
             _update_tombstone_tracker.apply(std::move(*_update).as_range_tombstone());
         } else if (_update->is_clustering_row()) {
+            vlogger.warn("Is clustering row");
             assert(_existing->is_clustering_row());
             apply_tracked_tombstones(_update_tombstone_tracker, _update->as_mutable_clustering_row());
             apply_tracked_tombstones(_existing_tombstone_tracker, _existing->as_mutable_clustering_row());
             generate_update(std::move(*_update).as_clustering_row(), { std::move(*_existing).as_clustering_row() });
         }
+        vlogger.warn("Advancing all");
         return advance_all();
     }
 
     auto tombstone = _update_tombstone_tracker.current_tombstone();
     if (tombstone && _existing && !_existing->is_end_of_partition()) {
+        vlogger.warn("Tombstone");
         // We don't care if it's a range tombstone, as we're only looking for existing entries that get deleted
         if (_existing->is_clustering_row()) {
+            vlogger.warn("is clustrowtom");
             auto existing = clustering_row(*_schema, _existing->as_clustering_row());
             auto update = clustering_row(existing.key(), row_tombstone(std::move(tombstone)), row_marker(), ::row());
             generate_update(std::move(update), { std::move(existing) });
         }
+        vlogger.warn("Advancing exist");
         return advance_existings();
     }
 
     // If we have updates and it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it
     if (_update && !_update->is_end_of_partition()) {
+        vlogger.warn("Update is here");
         if (_update->is_clustering_row()) {
+            vlogger.warn("is clusterlast");
             apply_tracked_tombstones(_update_tombstone_tracker, _update->as_mutable_clustering_row());
             generate_update(std::move(*_update).as_clustering_row(), { });
         }
+        vlogger.warn("advancinglast");
         return advance_updates();
     }
-
+    vlogger.warn("stopping");
     return stop();
 }
 
@@ -893,6 +923,7 @@ future<std::vector<frozen_mutation_and_schema>> generate_view_updates(
         flat_mutation_reader&& updates,
         flat_mutation_reader_opt&& existings) {
     auto vs = boost::copy_range<std::vector<view_updates>>(views_to_update | boost::adaptors::transformed([&] (auto&& v) {
+        vlogger.warn("View updates for {}", v->cf_name());
         return view_updates(std::move(v), base);
     }));
     auto builder = std::make_unique<view_update_builder>(base, std::move(vs), std::move(updates), std::move(existings));

@@ -2103,6 +2103,7 @@ future<> table::generate_and_propagate_view_updates(const schema_ptr& base,
             std::move(views),
             flat_mutation_reader_from_mutations({std::move(m)}),
             std::move(existings)).then([this, base_token = std::move(base_token)] (std::vector<frozen_mutation_and_schema>&& updates) mutable {
+        tlogger.warn("Generated {} updates", updates.size());
         auto units = seastar::consume_units(*_config.view_update_concurrency_semaphore, memory_usage_of(updates));
         //FIXME: discarded future.
         (void)db::view::mutate_MV(std::move(base_token), std::move(updates), _view_stats, *_config.cf_stats, std::move(units)).handle_exception([] (auto ignored) { });
@@ -2511,16 +2512,19 @@ future<row_locker::lock_holder> table::do_push_view_replica_updates(const schema
     m.upgrade(base);
     auto views = affected_views(base, m);
     if (views.empty()) {
+        tlogger.warn("No views");
         return make_ready_future<row_locker::lock_holder>();
     }
     auto cr_ranges = db::view::calculate_affected_clustering_ranges(*base, m.decorated_key(), m.partition(), views);
     if (cr_ranges.empty()) {
+        tlogger.warn("No ranges affected");
         return generate_and_propagate_view_updates(base, std::move(views), std::move(m), { }).then([] {
                 // In this case we are not doing a read-before-write, just a
                 // write, so no lock is needed.
                 return make_ready_future<row_locker::lock_holder>();
         });
     }
+    tlogger.warn("Ranges {}", cr_ranges);
     // We read the whole set of regular columns in case the update now causes a base row to pass
     // a view's filters, and a view happens to include columns that have no value in this update.
     // Also, one of those columns can determine the lifetime of the base row, if it has a TTL.
@@ -2544,6 +2548,7 @@ future<row_locker::lock_holder> table::do_push_view_replica_updates(const schema
         std::move(m),
         [base, views = std::move(views), lock = std::move(lock), this, timeout, source = std::move(source), &io_priority] (auto& pk, auto& slice, auto& m) mutable {
             auto reader = source.make_reader(base, pk, slice, io_priority);
+            tlogger.warn("Made reader, propagating");
             return this->generate_and_propagate_view_updates(base, std::move(views), std::move(m), std::move(reader)).then([lock = std::move(lock)] () mutable {
                 // return the local partition/row lock we have taken so it
                 // remains locked until the caller is done modifying this

@@ -60,6 +60,8 @@
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
 
+using namespace std::chrono_literals;
+
 namespace cql3 {
 
 namespace statements {
@@ -289,13 +291,243 @@ select_statement::execute(service::storage_proxy& proxy,
     return select_stage(this, seastar::ref(proxy), seastar::ref(state), seastar::cref(options));
 }
 
+static logging::logger srn("SARNA");
+
+
+class purge_ghosts_visitor {
+    service::storage_proxy& _proxy;
+    service::query_state& _state;
+    view_ptr _view;
+    table& _view_table;
+    schema_ptr _base_schema;
+    std::optional<partition_key> _pk;
+public:
+    purge_ghosts_visitor(service::storage_proxy& proxy, service::query_state& state, view_ptr view)
+            : _proxy(proxy)
+            , _state(state)
+            , _view(view)
+            , _view_table(_proxy.get_db().local().find_column_family(view))
+            , _base_schema(_proxy.get_db().local().find_schema(_view->view_info()->base_id()))
+            , _pk()
+    {}
+
+    void add_value(const column_definition& def, query::result_row_view::iterator_type& i) {
+        srn.warn("gAdding to {}", def.name_as_text());
+    }
+
+    void accept_new_partition(const partition_key& key, uint32_t row_count) {
+        srn.warn("Pgartition {}:{}", key, row_count);
+        _pk = key;
+    }
+
+    void accept_new_partition(uint32_t row_count) {
+        srn.warn("gPartition <null>:{}", row_count);
+    }
+
+    // Assumes running in seastar::thread
+    void accept_new_row(const clustering_key& ck, const query::result_row_view& static_row, const query::result_row_view& row) {
+        // TODO: Extract the base primary key and issue a CQL query to see if such a row exists
+        // IF it doesn't, remove the view row
+        srn.warn("gClust {}", ck);
+        // future<> table::generate_and_propagate_view_updates(const schema_ptr& base,
+        // std::vector<view_ptr>&& views,
+        // mutation&& m,
+        // flat_mutation_reader_opt existings)
+
+        auto view_exploded_pk = _pk->explode();
+        auto view_exploded_ck = ck.explode();
+        srn.warn("View key: {}-{}", *_pk, ck);
+        std::vector<bytes> base_exploded_pk(_base_schema->partition_key_size());
+        std::vector<bytes> base_exploded_ck(_base_schema->clustering_key_size());
+        for (const column_definition& view_cdef : _view->all_columns()) {
+            const column_definition* base_cdef = _base_schema->get_column_definition(view_cdef.name());
+            if (base_cdef) {
+                srn.warn("Column name {}. Type {}", view_cdef.name(), int(view_cdef.kind));
+                std::vector<bytes>& view_exploded_key = view_cdef.is_partition_key() ? view_exploded_pk : view_exploded_ck;
+                if (base_cdef->is_partition_key()) {
+                    //fixme: print which key it is here
+                    srn.warn("Is pk, base {}, view {}, data {}", base_cdef->id, view_cdef.id, view_exploded_key[view_cdef.id]);
+                    base_exploded_pk[base_cdef->id] = view_exploded_key[view_cdef.id];
+                } else if (base_cdef->is_clustering_key()) {
+                    //fixme: print which key it is here
+                    srn.warn("Is ck, base {}, view {}, data {}", base_cdef->id, view_cdef.id, view_exploded_key[view_cdef.id]);
+                    base_exploded_ck[base_cdef->id] = view_exploded_key[view_cdef.id];
+                }
+            } else {
+                srn.warn("Not found in base: {}", view_cdef.name());
+            }
+        }
+        partition_key base_pk = partition_key::from_exploded(base_exploded_pk);
+        clustering_key base_ck = clustering_key::from_exploded(base_exploded_ck);
+        srn.warn("Base recreated pk = {}; ck = {}", base_pk, base_ck);
+
+        // Querying base
+        dht::partition_range_vector partition_ranges({dht::partition_range::make_singular(dht::global_partitioner().decorate_key(*_base_schema, base_pk))});
+        auto selection = cql3::selection::selection::wildcard(_base_schema); // FIXME: we only need keys
+        std::vector<query::clustering_range> bounds{query::clustering_range::make_singular(base_ck)};
+        query::partition_slice partition_slice(std::move(bounds), {},  {}, selection->get_query_options());
+        auto command = ::make_lw_shared<query::read_command>(_base_schema->id(), _base_schema->version(), partition_slice, query::max_partitions);
+        auto timeout = db::timeout_clock::now() + 10s;
+        service::storage_proxy::coordinator_query_options opts{timeout, _state.get_permit(), _state.get_client_state(), _state.get_trace_state()};
+        auto base_qr = _proxy.query(_base_schema, command, std::move(partition_ranges), db::consistency_level::QUORUM, opts).get0();
+        query::result& result = *base_qr.query_result;
+        srn.warn("Got base result: {}", result.row_count());
+        if (result.row_count().value_or(0) == 0) {
+            srn.warn("Purging");
+            mutation m(_view, *_pk);
+            auto& row = m.partition().clustered_row(*_view, ck);
+            row.apply(tombstone(api::new_timestamp(), gc_clock::now()));
+            timeout = db::timeout_clock::now() + 10s;
+            _proxy.mutate({m}, db::consistency_level::QUORUM, timeout, _state.get_client_state().get_trace_state(), empty_service_permit()).get();
+        }
+    }
+
+    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {
+        srn.warn("Static row");
+    }
+
+    uint32_t accept_partition_end(const query::result_row_view& static_row) {
+        srn.warn("Partition end");
+        return 0;
+    }
+};
+
+static future<> purge_ghost_rows(dht::partition_range_vector partition_ranges, view_ptr view, service::storage_proxy& proxy, service::query_state& state) {
+    auto selection = cql3::selection::selection::wildcard(view); // FIXME: we only need keys
+    // FIXME(sarna): allow partial bounds
+    std::vector<query::clustering_range> bounds{query::clustering_range::make_open_ended_both_sides()};
+    query::partition_slice partition_slice(std::move(bounds), {},  {}, selection->get_query_options());
+    auto command = ::make_lw_shared<query::read_command>(view->id(), view->version(), partition_slice, query::max_partitions);
+    auto timeout = db::timeout_clock::now() + 10s;
+
+    srn.warn("PURGING GHOST FROM PARTITION {}.{}", view->ks_name(), view->cf_name());
+    service::storage_proxy::coordinator_query_options opts{timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()};
+    return proxy.query(view, command, std::move(partition_ranges), db::consistency_level::QUORUM, opts).then([view, partition_slice = std::move(partition_slice), &proxy, &state] (service::storage_proxy::coordinator_query_result base_qr) {
+        return seastar::async([view, base_qr = std::move(base_qr), partition_slice = std::move(partition_slice), &proxy, &state] {
+            query::result_view::consume(*base_qr.query_result,
+                                        std::move(partition_slice),
+                                        purge_ghosts_visitor{proxy, state, view});
+        });
+    });
+}
+
+class repair_view_visitor {
+    service::storage_proxy& _proxy;
+    schema_ptr _schema;
+    table& _table;
+    std::optional<partition_key> _pk;
+public:
+    repair_view_visitor(service::storage_proxy& proxy, schema_ptr schema)
+            : _proxy(proxy)
+            , _schema(schema)
+            , _table(_proxy.get_db().local().find_column_family(schema))
+            , _pk()
+    {}
+
+    void add_value(const column_definition& def, query::result_row_view::iterator_type& i) {
+        srn.warn("Adding to {}", def.name_as_text());
+    }
+
+    void accept_new_partition(const partition_key& key, uint32_t row_count) {
+        srn.warn("Partition {}:{}", key, row_count);
+        _pk = key;
+    }
+
+    void accept_new_partition(uint32_t row_count) {
+        srn.warn("Partition <null>:{}", row_count);
+    }
+
+    // Assumes running in seastar::thread
+    void accept_new_row(const clustering_key& ck, const query::result_row_view& static_row, const query::result_row_view& row) {
+        srn.warn("Clust {}", ck);
+        // future<> table::generate_and_propagate_view_updates(const schema_ptr& base,
+        // std::vector<view_ptr>&& views,
+        // mutation&& m,
+        // flat_mutation_reader_opt existings)
+        mutation m(_schema, *_pk);
+        auto& clustered_row = m.partition().clustered_row(*_schema, ck);
+
+        auto row_iterator = row.iterator();
+        auto static_row_iterator = static_row.iterator();
+        for (const auto& def : _schema->all_columns()) {
+            switch (def.kind) {
+            case column_kind::partition_key:
+                break;
+            case column_kind::clustering_key:
+                break;
+            case column_kind::regular_column:
+                if (def.is_atomic()) {
+                    auto cell = row_iterator.next_atomic_cell();
+                    if (cell) {
+                        // row.cells().apply(*cdef, atomic_cell::make_live(*cdef->type, ts, column_value));
+                        auto expiry = cell->expiry();
+                        if (expiry) {
+                            auto ttl = cell->ttl();
+                            clustered_row.cells().apply(def, atomic_cell::make_live(*def.type, cell->timestamp(), cell->value(), *expiry, *ttl));
+
+                        } else {
+                            clustered_row.cells().apply(def, atomic_cell::make_live(*def.type, cell->timestamp(), cell->value()));
+                        }
+                    }
+                }
+                //FIXME(sarna): collections
+                break;
+            case column_kind::static_column:
+                //FIXME(sarna): statics - do we need them at all?
+                break;
+            }
+        }
+
+        srn.warn("Mutation {}", m);
+        auto timeout = db::timeout_clock::now() + 5s; // fixme: hardcoded
+        auto lock_holder = _table.push_view_replica_updates(_schema, std::move(m), timeout).get0();
+    }
+
+    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {
+        srn.warn("Static row");
+    }
+
+    uint32_t accept_partition_end(const query::result_row_view& static_row) {
+        srn.warn("Partition end");
+        return 0;
+    }
+};
+
+static future<> repair_view_partition(dht::partition_range_vector partition_ranges, schema_ptr base_schema, service::storage_proxy& proxy, service::query_state& state) {
+    auto regular_columns = boost::copy_range<query::column_id_vector>(
+             base_schema->regular_columns() | boost::adaptors::transformed([] (const column_definition& cdef) { return cdef.id; }));
+    auto selection = cql3::selection::selection::wildcard(base_schema);
+    // FIXME(sarna): allow partial bounds
+    std::vector<query::clustering_range> bounds{query::clustering_range::make_open_ended_both_sides()};
+    query::partition_slice partition_slice(std::move(bounds), {}, std::move(regular_columns), selection->get_query_options());
+    auto command = ::make_lw_shared<query::read_command>(base_schema->id(), base_schema->version(), partition_slice, query::max_partitions);
+    auto timeout = db::timeout_clock::now() + 10s;
+    auto fixme_pr = partition_ranges;
+    srn.warn("REPAIRING VIEW PARTITION {}.{}", base_schema->ks_name(), base_schema->cf_name());
+    service::storage_proxy::coordinator_query_options opts{timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()};
+    return proxy.query(base_schema, command, std::move(partition_ranges), db::consistency_level::QUORUM, opts).then([base_schema, partition_slice = std::move(partition_slice), &proxy] (service::storage_proxy::coordinator_query_result base_qr) {
+        return seastar::async([base_schema, base_qr = std::move(base_qr), partition_slice = std::move(partition_slice), &proxy] {
+            query::result_view::consume(*base_qr.query_result,
+                                        std::move(partition_slice),
+                                        repair_view_visitor{proxy, base_schema});
+        });
+    }).then([fixme_pr, base_schema, partition_slice = std::move(partition_slice), &proxy, &state] {
+        if (base_schema->is_view()) {
+            srn.warn("Purging rows");
+            return purge_ghost_rows(fixme_pr, view_ptr(base_schema), proxy, state);
+        } else {
+            srn.warn("No purge, is not view");
+            return make_ready_future<>();
+        }
+    });
+}
+
 future<shared_ptr<cql_transport::messages::result_message>>
 select_statement::do_execute(service::storage_proxy& proxy,
                           service::query_state& state,
                           const query_options& options)
 {
     tracing::add_table_name(state.get_trace_state(), keyspace(), column_family());
-
     auto cl = options.get_consistency();
 
     validate_for_read(cl);
@@ -325,6 +557,7 @@ select_statement::do_execute(service::storage_proxy& proxy,
     }
 
     auto key_ranges = _restrictions->get_partition_key_ranges(options);
+    auto key_ranges_wip = key_ranges;
 
     if (!aggregate && !restrictions_need_filtering && (page_size <= 0
             || !service::pager::query_pagers::may_need_paging(*_schema, page_size,
@@ -338,6 +571,7 @@ select_statement::do_execute(service::storage_proxy& proxy,
             state, options, command, std::move(key_ranges), _stats, restrictions_need_filtering ? _restrictions : nullptr);
 
     if (aggregate || nonpaged_filtering) {
+        srn.warn("aggregate or nonpaged filtering");
         return do_with(
                 cql3::selection::result_set_builder(*_selection, now,
                         options.get_cql_serialization_format(), *_group_by_cell_indices),
@@ -367,7 +601,8 @@ select_statement::do_execute(service::storage_proxy& proxy,
 
     auto timeout = db::timeout_clock::now() + timeout_duration;
     if (_selection->is_trivial() && !restrictions_need_filtering && !_per_partition_limit) {
-        return p->fetch_page_generator(page_size, now, timeout, _stats).then([this, p] (result_generator generator) {
+        srn.warn("trivial");
+        return p->fetch_page_generator(page_size, now, timeout, _stats).then([this, p, key_ranges_wip, &proxy, &state] (result_generator generator) {
             auto meta = [&] () -> shared_ptr<const cql3::metadata> {
                 if (!p->is_exhausted()) {
                     auto meta = make_shared<metadata>(*_selection->get_result_metadata());
@@ -378,13 +613,16 @@ select_statement::do_execute(service::storage_proxy& proxy,
                 }
             }();
 
+            //FIXME again
+            return repair_view_partition(key_ranges_wip, _schema, proxy, state).then([generator = std::move(generator), meta = std::move(meta)] () mutable {
             return shared_ptr<cql_transport::messages::result_message>(
                 make_shared<cql_transport::messages::result_message::rows>(result(std::move(generator), std::move(meta)))
             );
+            });
         });
     }
 
-    return p->fetch_page(page_size, now, timeout).then(
+    auto returned = p->fetch_page(page_size, now, timeout).then(
             [this, p, &options, now, restrictions_need_filtering](std::unique_ptr<cql3::result_set> rs) {
 
                 if (!p->is_exhausted()) {
@@ -398,6 +636,13 @@ select_statement::do_execute(service::storage_proxy& proxy,
                 auto msg = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
                 return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(std::move(msg));
             });
+    return returned.then([this, key_ranges_wip, &proxy, &state] (auto res) {
+        //static future<> repair_view_partition(dht::partition_range_vector partition_ranges, schema_ptr base_schema, schema_ptr view_schema, service::storage_proxy& proxy, service::query_state& state) {
+
+        return repair_view_partition(key_ranges_wip, _schema, proxy, state).then([res] {
+            return res;
+        });
+    });
 }
 
 template<typename KeyType>
@@ -619,12 +864,17 @@ select_statement::execute(service::storage_proxy& proxy,
                 });
             }, std::move(merger));
         }).then([this, &options, now, cmd] (auto result) {
+            srn.warn("needs post query ordering or limit");
             return this->process_results(std::move(result), cmd, options, now);
         });
     } else {
+        //FIXME(sarna): another hack
+        auto partition_ranges_fixme = partition_ranges;
         return proxy.query(_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()})
-            .then([this, &options, now, cmd] (service::storage_proxy::coordinator_query_result qr) {
+            .then([this, partition_ranges_fixme, &options, now, cmd, &proxy, &state] (service::storage_proxy::coordinator_query_result qr) {
+                return repair_view_partition(partition_ranges_fixme, _schema, proxy, state).then([this, partition_ranges_fixme, &options, now, cmd, &proxy, &state, qr = std::move(qr)] () mutable {
                 return this->process_results(std::move(qr.query_result), cmd, options, now);
+                });
             });
     }
 }
