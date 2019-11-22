@@ -369,6 +369,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
     | st38=dropRoleStatement           { $stmt = std::move(st38); }
     | st39=createRoleStatement         { $stmt = std::move(st39); }
     | st40=alterRoleStatement          { $stmt = std::move(st40); }
+    | st41=deleteGhostRowsStatement    { $stmt = std::move(st41); }
     ;
 
 /*
@@ -595,6 +596,26 @@ deleteOp returns [std::unique_ptr<cql3::operation::raw_deletion> op]
 usingClauseDelete[std::unique_ptr<cql3::attributes::raw>& attrs]
     : K_USING K_TIMESTAMP ts=intValue { attrs->timestamp = ts; }
     ;
+
+
+deleteGhostRowsStatement returns [std::unique_ptr<raw::select_statement> expr]
+    @init {
+        bool is_distinct = false;
+        ::shared_ptr<cql3::term::raw> limit;
+        ::shared_ptr<cql3::term::raw> per_partition_limit;
+        raw::select_statement::parameters::orderings_type orderings;
+        bool allow_filtering = false;
+        raw::select_statement::parameters::statement_subtype statement_subtype = raw::select_statement::parameters::statement_subtype::DELETE_GHOST_ROWS;
+        bool bypass_cache = false;
+    }
+	: K_DELETE K_IF K_NOT K_EXISTS K_FROM K_MATERIALIZED K_VIEW cf=columnFamilyName (K_WHERE wclause=whereClause)?
+	  {
+	        auto params = make_lw_shared<raw::select_statement::parameters>(std::move(orderings), is_distinct, allow_filtering, statement_subtype, bypass_cache);
+	        return std::make_unique<raw::select_statement>(std::move(cf), std::move(params),
+            std::vector<shared_ptr<raw_selector>>(), std::move(wclause), std::move(limit), std::move(per_partition_limit),
+            std::vector<::shared_ptr<cql3::column_identifier::raw>>());
+	  }
+	;
 
 /**
  * BEGIN BATCH
