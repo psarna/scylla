@@ -29,6 +29,9 @@
 #include "types/set.hh"
 #include "exception_utils.hh"
 #include "cql3/statements/select_statement.hh"
+#include "mutation_partition.hh"
+#include "sstables/compaction_manager.hh"
+#include "db/config.hh"
 
 using namespace std::chrono_literals;
 
@@ -1310,4 +1313,102 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
             });
         });
     });
+}
+
+SEASTAR_TEST_CASE(test_regenerating_view) {
+    auto cfg = make_shared<db::config>();
+    cfg->enable_cache(false);
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (p int, c int, v int, PRIMARY KEY (p, c))");
+        cquery_nofail(e, "CREATE MATERIALIZED VIEW tv AS SELECT v, p, c FROM t WHERE v IS NOT NULL AND c IS NOT NULL PRIMARY KEY (v, p, c);");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (1,1,1)");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (1,2,3)");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (2,4,6)");
+
+        auto lose_view_row = [&e] (int pk, int ck1, int ck2) {
+            e.db().invoke_on_all([pk, ck1, ck2] (database& db) {
+                schema_ptr schema = db.find_schema("ks", "tv");
+                table& t = db.find_column_family(schema);
+                mutation m(schema, partition_key::from_singular(*schema, pk));
+                auto& row = m.partition().clustered_row(*schema, clustering_key::from_exploded(*schema, {int32_type->decompose(ck1), int32_type->decompose(ck2)}));
+                row.apply(tombstone(api::new_timestamp(), gc_clock::now()));
+                unsigned shard = db.shard_of(m);
+                if (shard == engine().cpu_id()) {
+                    t.apply(m);
+                    // Materialized views have a hardcoded gc_grace_seconds value set to 10 days.
+                    // A jump forward with a large value will make the tombstones disappear,
+                    // which in turn allows simulating ghost rows.
+                    forward_jump_clocks(1800h);
+                    return db.flush_all_memtables().then([&db, &t] {
+                        return db.get_compaction_manager().submit_major_compaction(&t);
+                    }).then([&t] {
+                        return t.clear();
+                    });
+                }
+                return make_ready_future<>();
+            }).get();
+        };
+
+        lose_view_row(6, 2, 4);
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_size(2);
+        });
+
+        // View regeneration is attempted for a single view partition
+        cquery_nofail(e, "UPDATE PER MATERIALIZED VIEW FROM t WHERE p = 2 and c = 4");
+        eventually([&] {
+            // View is regenerated
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                {int32_type->decompose(1), int32_type->decompose(1), int32_type->decompose(1)},
+                {int32_type->decompose(3), int32_type->decompose(1), int32_type->decompose(2)},
+                {int32_type->decompose(6), int32_type->decompose(2), int32_type->decompose(4)}
+            });
+        });
+
+        lose_view_row(6, 2, 4);
+        lose_view_row(1, 1, 1);
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_size(1);
+        });
+
+        // View regeneration is attempted for the whole table
+        cquery_nofail(e, "UPDATE PER MATERIALIZED VIEW FROM t;");
+        eventually([&] {
+            // View is regenerated
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                {int32_type->decompose(1), int32_type->decompose(1), int32_type->decompose(1)},
+                {int32_type->decompose(3), int32_type->decompose(1), int32_type->decompose(2)},
+                {int32_type->decompose(6), int32_type->decompose(2), int32_type->decompose(4)}
+            });
+        });
+
+        lose_view_row(6, 2, 4);
+        lose_view_row(1, 1, 1);
+        lose_view_row(3, 1, 2);
+        eventually([&] {
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_size(0);
+        });
+        // View regeneration is attempted with a parallelized table scan
+        when_all(
+            e.execute_cql("UPDATE PER MATERIALIZED VIEW FROM t WHERE token(p) >= -9223372036854775807 AND token(p) <= 0"),
+            e.execute_cql("UPDATE PER MATERIALIZED VIEW FROM t WHERE token(p) > 0 AND token(p) <= 10000000"),
+            e.execute_cql("UPDATE PER MATERIALIZED VIEW FROM t WHERE token(p) > 10000000 AND token(p) <= 20000000"),
+            e.execute_cql("UPDATE PER MATERIALIZED VIEW FROM t WHERE token(p) > 20000000 AND token(p) <= 30000000"),
+            e.execute_cql("UPDATE PER MATERIALIZED VIEW FROM t WHERE token(p) > 30000000 AND token(p) <= 9223372036854775807")
+        ).get();
+        eventually([&] {
+            // View is regenerated
+            auto msg = cquery_nofail(e, "SELECT * FROM tv;");
+            assert_that(msg).is_rows().with_rows_ignore_order({
+                {int32_type->decompose(1), int32_type->decompose(1), int32_type->decompose(1)},
+                {int32_type->decompose(3), int32_type->decompose(1), int32_type->decompose(2)},
+                {int32_type->decompose(6), int32_type->decompose(2), int32_type->decompose(4)}
+            });
+        });
+    }, cfg);
 }
