@@ -928,7 +928,7 @@ public:
     void clear_views();
     const std::vector<view_ptr>& views() const;
     future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, const frozen_mutation& fm, db::timeout_clock::time_point timeout) const;
-    future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout) const;
+    future<row_locker::lock_holder> push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, bool force_generating_view_updates = false) const;
     future<row_locker::lock_holder> stream_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, sstables::shared_sstable excluded_sstable) const;
     void add_coordinator_read_latency(utils::estimated_histogram::duration latency);
     std::chrono::milliseconds get_coordinator_read_latency_percentile(double percentile);
@@ -956,12 +956,14 @@ public:
     }
 
 private:
-    future<row_locker::lock_holder> do_push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, mutation_source&& source, const io_priority_class& io_priority) const;
+    future<row_locker::lock_holder> do_push_view_replica_updates(const schema_ptr& s, mutation&& m, db::timeout_clock::time_point timeout, mutation_source&& source,
+            const io_priority_class& io_priority, bool force_generating_view_updates = false) const;
     std::vector<view_ptr> affected_views(const schema_ptr& base, const mutation& update) const;
     future<> generate_and_propagate_view_updates(const schema_ptr& base,
             std::vector<view_ptr>&& views,
             mutation&& m,
-            flat_mutation_reader_opt existings) const;
+            flat_mutation_reader_opt existings,
+            bool force_generating_view_updates = false) const;
 
     mutable row_locker _row_locker;
     future<row_locker::lock_holder> local_base_lock(

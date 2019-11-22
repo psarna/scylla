@@ -103,7 +103,8 @@ future<std::vector<frozen_mutation_and_schema>> generate_view_updates(
         const schema_ptr& base,
         std::vector<view_ptr>&& views_to_update,
         flat_mutation_reader&& updates,
-        flat_mutation_reader_opt&& existings);
+        flat_mutation_reader_opt&& existings,
+        bool force_update_generation = false);
 
 query::clustering_row_ranges calculate_affected_clustering_ranges(
         const schema& base,

@@ -224,13 +224,15 @@ class view_updates final {
     const view_info& _view_info;
     schema_ptr _base;
     std::unordered_map<partition_key, mutation_partition, partition_key::hashing, partition_key::equality> _updates;
+    const bool _force_generating_updates;
 public:
-    explicit view_updates(view_ptr view, schema_ptr base)
+    explicit view_updates(view_ptr view, schema_ptr base, bool force_generating_updates)
             : _view(std::move(view))
             , _view_info(*_view->view_info())
             , _base(std::move(base))
-            , _updates(8, partition_key::hashing(*_view), partition_key::equality(*_view)) {
-    }
+            , _updates(8, partition_key::hashing(*_view), partition_key::equality(*_view))
+            , _force_generating_updates(force_generating_updates)
+    {}
 
     void move_to(std::vector<frozen_mutation_and_schema>& mutations) && {
         auto& partitioner = dht::global_partitioner();
@@ -560,6 +562,9 @@ static bool atomic_cells_liveness_equal(atomic_cell_view left, atomic_cell_view 
 }
 
 bool view_updates::can_skip_view_updates(const clustering_row& update, const clustering_row& existing) const {
+    if (_force_generating_updates) {
+        return false;
+    }
     const row& existing_row = existing.cells();
     const row& updated_row = update.cells();
 
@@ -891,9 +896,10 @@ future<std::vector<frozen_mutation_and_schema>> generate_view_updates(
         const schema_ptr& base,
         std::vector<view_ptr>&& views_to_update,
         flat_mutation_reader&& updates,
-        flat_mutation_reader_opt&& existings) {
+        flat_mutation_reader_opt&& existings,
+        bool force_update_generation) {
     auto vs = boost::copy_range<std::vector<view_updates>>(views_to_update | boost::adaptors::transformed([&] (auto&& v) {
-        return view_updates(std::move(v), base);
+        return view_updates(std::move(v), base, force_update_generation);
     }));
     auto builder = std::make_unique<view_update_builder>(base, std::move(vs), std::move(updates), std::move(existings));
     auto f = builder->build();
