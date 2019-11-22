@@ -71,7 +71,7 @@ public:
     class parameters final {
     public:
         using orderings_type = std::vector<std::pair<shared_ptr<column_identifier::raw>, bool>>;
-        enum class statement_subtype { REGULAR, JSON, DELETE_GHOST_ROWS };
+        enum class statement_subtype { REGULAR, JSON, DELETE_GHOST_ROWS, REGENERATE_VIEW };
     private:
         const orderings_type _orderings;
         const bool _is_distinct;
@@ -93,6 +93,7 @@ public:
         bool is_json() const;
         bool bypass_cache() const;
         bool is_delete_ghost_rows() const;
+        bool is_regenerate_view() const;
         orderings_type const& orderings() const;
     };
     template<typename T>

@@ -42,7 +42,7 @@
 #include "cql3/statements/select_statement.hh"
 #include "cql3/statements/raw/select_statement.hh"
 #include "cql3/statements/delete_ghost_rows_statement.hh"
-
+#include "cql3/statements/regenerate_views_statement.hh"
 #include "transport/messages/result_message.hh"
 #include "cql3/functions/as_json_function.hh"
 #include "cql3/selection/selection.hh"
@@ -114,6 +114,10 @@ bool select_statement::parameters::bypass_cache() const {
 
 bool select_statement::parameters::is_delete_ghost_rows() const {
     return _statement_subtype == statement_subtype::DELETE_GHOST_ROWS;
+}
+
+bool select_statement::parameters::is_regenerate_view() const {
+    return _statement_subtype == statement_subtype::REGENERATE_VIEW;
 }
 
 select_statement::parameters::orderings_type const& select_statement::parameters::orderings() const {
@@ -1287,6 +1291,19 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
     ::shared_ptr<cql3::statements::select_statement> stmt;
     if (_parameters->is_delete_ghost_rows()) {
         stmt = ::make_shared<cql3::statements::delete_ghost_rows_statement>(
+                schema,
+                bound_names->size(),
+                _parameters,
+                std::move(selection),
+                std::move(restrictions),
+                std::move(group_by_cell_indices),
+                is_reversed_,
+                std::move(ordering_comparator),
+                prepare_limit(db, bound_names, _limit),
+                prepare_limit(db, bound_names, _per_partition_limit),
+                stats);
+    } else if (_parameters->is_regenerate_view()) {
+        stmt = ::make_shared<cql3::statements::regenerate_views_statement>(
                 schema,
                 bound_names->size(),
                 _parameters,
