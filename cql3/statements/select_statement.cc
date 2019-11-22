@@ -41,6 +41,7 @@
 
 #include "cql3/statements/select_statement.hh"
 #include "cql3/statements/raw/select_statement.hh"
+#include "cql3/statements/delete_ghost_rows_statement.hh"
 
 #include "transport/messages/result_message.hh"
 #include "cql3/functions/as_json_function.hh"
@@ -71,7 +72,7 @@ thread_local const shared_ptr<select_statement::parameters> select_statement::_d
 select_statement::parameters::parameters()
     : _is_distinct{false}
     , _allow_filtering{false}
-    , _is_json{false}
+    , _statement_subtype{statement_subtype::REGULAR}
 { }
 
 select_statement::parameters::parameters(orderings_type orderings,
@@ -80,18 +81,18 @@ select_statement::parameters::parameters(orderings_type orderings,
     : _orderings{std::move(orderings)}
     , _is_distinct{is_distinct}
     , _allow_filtering{allow_filtering}
-    , _is_json{false}
+    , _statement_subtype{statement_subtype::REGULAR}
 { }
 
 select_statement::parameters::parameters(orderings_type orderings,
                                          bool is_distinct,
                                          bool allow_filtering,
-                                         bool is_json,
+                                         statement_subtype statement_subtype,
                                          bool bypass_cache)
     : _orderings{std::move(orderings)}
     , _is_distinct{is_distinct}
     , _allow_filtering{allow_filtering}
-    , _is_json{is_json}
+    , _statement_subtype{statement_subtype}
     , _bypass_cache{bypass_cache}
 { }
 
@@ -100,7 +101,7 @@ bool select_statement::parameters::is_distinct() const {
 }
 
 bool select_statement::parameters::is_json() const {
-   return _is_json;
+   return _statement_subtype == statement_subtype::JSON;
 }
 
 bool select_statement::parameters::allow_filtering() const {
@@ -109,6 +110,10 @@ bool select_statement::parameters::allow_filtering() const {
 
 bool select_statement::parameters::bypass_cache() const {
     return _bypass_cache;
+}
+
+bool select_statement::parameters::is_delete_ghost_rows() const {
+    return _statement_subtype == statement_subtype::DELETE_GHOST_ROWS;
 }
 
 select_statement::parameters::orderings_type const& select_statement::parameters::orderings() const {
@@ -1280,7 +1285,20 @@ std::unique_ptr<prepared_statement> select_statement::prepare(database& db, cql_
     auto group_by_cell_indices = ::make_shared<std::vector<size_t>>(prepare_group_by(schema, *selection));
 
     ::shared_ptr<cql3::statements::select_statement> stmt;
-    if (restrictions->uses_secondary_indexing()) {
+    if (_parameters->is_delete_ghost_rows()) {
+        stmt = ::make_shared<cql3::statements::delete_ghost_rows_statement>(
+                schema,
+                bound_names->size(),
+                _parameters,
+                std::move(selection),
+                std::move(restrictions),
+                std::move(group_by_cell_indices),
+                is_reversed_,
+                std::move(ordering_comparator),
+                prepare_limit(db, bound_names, _limit),
+                prepare_limit(db, bound_names, _per_partition_limit),
+                stats);
+    } else if (restrictions->uses_secondary_indexing()) {
         stmt = indexed_table_select_statement::prepare(
                 db,
                 schema,
