@@ -77,6 +77,15 @@ public:
             cql3::cql_stats& stats,
             storage_proxy& proxy,
             db::timeout_clock::duration timeout_duration);
+    static ::shared_ptr<query_pager> regenerate_views_pager(schema_ptr,
+            shared_ptr<const cql3::selection::selection>,
+            service::query_state&,
+            const cql3::query_options&,
+            lw_shared_ptr<query::read_command>,
+            dht::partition_range_vector,
+            cql3::cql_stats& stats,
+            storage_proxy& proxy,
+            db::timeout_clock::duration timeout_duration);
 };
 
 }

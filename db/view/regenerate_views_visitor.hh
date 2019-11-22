@@ -91,7 +91,8 @@ public:
 
         auto timeout = db::timeout_clock::now() + _timeout_duration;
         dblog.warn("Sending {}", m);
-        auto lock_holder = _table.push_view_replica_updates(_schema, std::move(m), timeout).get0();
+        const bool force_updates = true;
+        auto lock_holder = _table.push_view_replica_updates(_schema, std::move(m), timeout, force_updates).get0();
     }
 
     void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {

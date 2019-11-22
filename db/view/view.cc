@@ -567,7 +567,7 @@ bool view_updates::can_skip_view_updates(const clustering_row& update, const clu
     }
     const row& existing_row = existing.cells();
     const row& updated_row = update.cells();
-
+    return false;
     const bool base_has_nonexpiring_marker = update.marker().is_live() && !update.marker().is_expiring();
     return boost::algorithm::all_of(_base->regular_columns(), [this, &updated_row, &existing_row, base_has_nonexpiring_marker] (const column_definition& cdef) {
         const auto view_it = _view->columns_by_name().find(cdef.name());
