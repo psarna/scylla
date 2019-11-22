@@ -71,7 +71,7 @@ thread_local const shared_ptr<select_statement::parameters> select_statement::_d
 select_statement::parameters::parameters()
     : _is_distinct{false}
     , _allow_filtering{false}
-    , _is_json{false}
+    , _statement_subtype{statement_subtype::REGULAR}
 { }
 
 select_statement::parameters::parameters(orderings_type orderings,
@@ -80,18 +80,18 @@ select_statement::parameters::parameters(orderings_type orderings,
     : _orderings{std::move(orderings)}
     , _is_distinct{is_distinct}
     , _allow_filtering{allow_filtering}
-    , _is_json{false}
+    , _statement_subtype{statement_subtype::REGULAR}
 { }
 
 select_statement::parameters::parameters(orderings_type orderings,
                                          bool is_distinct,
                                          bool allow_filtering,
-                                         bool is_json,
+                                         statement_subtype statement_subtype,
                                          bool bypass_cache)
     : _orderings{std::move(orderings)}
     , _is_distinct{is_distinct}
     , _allow_filtering{allow_filtering}
-    , _is_json{is_json}
+    , _statement_subtype{statement_subtype}
     , _bypass_cache{bypass_cache}
 { }
 
@@ -100,7 +100,7 @@ bool select_statement::parameters::is_distinct() const {
 }
 
 bool select_statement::parameters::is_json() const {
-   return _is_json;
+   return _statement_subtype == statement_subtype::JSON;
 }
 
 bool select_statement::parameters::allow_filtering() const {
