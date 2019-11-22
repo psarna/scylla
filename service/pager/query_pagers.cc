@@ -48,6 +48,7 @@
 #include "database.hh"
 #include "view_info.hh"
 #include "db/view/delete_ghost_rows_visitor.hh"
+#include "db/view/regenerate_views_visitor.hh"
 
 static logging::logger qlogger("paging");
 
@@ -296,6 +297,37 @@ public:
     }
 };
 
+class regenerating_views_query_pager : public service::pager::query_pager {
+    service::storage_proxy& _proxy;
+    db::timeout_clock::duration _timeout_duration;
+public:
+    regenerating_views_query_pager(schema_ptr s, shared_ptr<const cql3::selection::selection> selection,
+                service::query_state& state,
+                const cql3::query_options& options,
+                lw_shared_ptr<query::read_command> cmd,
+                dht::partition_range_vector ranges,
+                cql3::cql_stats& stats,
+                service::storage_proxy& proxy,
+                db::timeout_clock::duration timeout_duration)
+        : query_pager(s, selection, state, options, std::move(cmd), std::move(ranges))
+        , _proxy(proxy)
+        , _timeout_duration(timeout_duration)
+    {}
+    virtual ~regenerating_views_query_pager() {}
+
+    virtual future<> fetch_page(cql3::selection::result_set_builder& builder, uint32_t page_size, gc_clock::time_point now, db::timeout_clock::time_point timeout) override {
+        return do_fetch_page(page_size, now, timeout).then([this, &builder, page_size, now] (service::storage_proxy::coordinator_query_result qr) {
+            _last_replicas = std::move(qr.last_replicas);
+            _query_read_repair_decision = qr.read_repair_decision;
+            qr.query_result->ensure_counts();
+            return seastar::async([this, query_result = std::move(qr.query_result), page_size, now] () mutable {
+                handle_result(regenerate_views_visitor{_proxy, _schema, _timeout_duration},
+                        std::move(query_result), page_size, now);
+            });
+        });
+    }
+};
+
 template<typename Base>
 class query_pager::query_result_visitor : public Base {
     using visitor = Base;
@@ -466,5 +498,17 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
         storage_proxy& proxy,
         db::timeout_clock::duration duration) {
     return ::make_shared<ghost_row_deleting_query_pager>(std::move(s), std::move(selection), state,
+            options, std::move(cmd), std::move(ranges), stats, proxy, duration);
+}
+
+::shared_ptr<service::pager::query_pager> service::pager::query_pagers::regenerate_views_pager(
+        schema_ptr s, shared_ptr<const cql3::selection::selection> selection,
+        service::query_state& state, const cql3::query_options& options,
+        lw_shared_ptr<query::read_command> cmd,
+        dht::partition_range_vector ranges,
+        cql3::cql_stats& stats,
+        storage_proxy& proxy,
+        db::timeout_clock::duration duration) {
+    return ::make_shared<regenerating_views_query_pager>(std::move(s), std::move(selection), state,
             options, std::move(cmd), std::move(ranges), stats, proxy, duration);
 }
