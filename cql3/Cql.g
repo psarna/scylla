@@ -391,11 +391,11 @@ selectStatement returns [std::unique_ptr<raw::select_statement> expr]
         ::shared_ptr<cql3::term::raw> per_partition_limit;
         raw::select_statement::parameters::orderings_type orderings;
         bool allow_filtering = false;
-        bool is_json = false;
+        raw::select_statement::parameters::statement_subtype statement_subtype = raw::select_statement::parameters::statement_subtype::REGULAR;
         bool bypass_cache = false;
     }
     : K_SELECT (
-                ( K_JSON { is_json = true; } )?
+                ( K_JSON { statement_subtype = raw::select_statement::parameters::statement_subtype::JSON; } )?
                 ( K_DISTINCT { is_distinct = true; } )?
                 sclause=selectClause
                )
