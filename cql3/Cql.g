@@ -370,6 +370,7 @@ cqlStatement returns [shared_ptr<raw::parsed_statement> stmt]
     | st39=createRoleStatement         { $stmt = st39; }
     | st40=alterRoleStatement          { $stmt = st40; }
     | st41=deleteGhostRowsStatement    { $stmt = st41; }
+    | st42=regenerateViewsStatement    { $stmt = st42; }
     ;
 
 /*
@@ -609,6 +610,25 @@ deleteGhostRowsStatement returns [shared_ptr<raw::select_statement> expr]
         bool bypass_cache = false;
     }
 	: K_DELETE K_IF K_NOT K_EXISTS K_FROM K_MATERIALIZED K_VIEW cf=columnFamilyName (K_WHERE wclause=whereClause)?
+	  {
+	        auto params = ::make_shared<raw::select_statement::parameters>(std::move(orderings), is_distinct, allow_filtering, statement_subtype, bypass_cache);
+	        return ::make_shared<raw::select_statement>(std::move(cf), std::move(params),
+            std::vector<shared_ptr<raw_selector>>(), std::move(wclause), std::move(limit), std::move(per_partition_limit),
+            std::vector<::shared_ptr<cql3::column_identifier::raw>>());
+	  }
+	;
+
+regenerateViewsStatement returns [shared_ptr<raw::select_statement> expr]
+    @init {
+        bool is_distinct = false;
+        ::shared_ptr<cql3::term::raw> limit;
+        ::shared_ptr<cql3::term::raw> per_partition_limit;
+        raw::select_statement::parameters::orderings_type orderings;
+        bool allow_filtering = false;
+        raw::select_statement::parameters::statement_subtype statement_subtype = raw::select_statement::parameters::statement_subtype::REGENERATE_VIEW;
+        bool bypass_cache = false;
+    }
+	: K_UPDATE K_PER K_MATERIALIZED K_VIEW K_FROM cf=columnFamilyName (K_WHERE wclause=whereClause)?
 	  {
 	        auto params = ::make_shared<raw::select_statement::parameters>(std::move(orderings), is_distinct, allow_filtering, statement_subtype, bypass_cache);
 	        return ::make_shared<raw::select_statement>(std::move(cf), std::move(params),
