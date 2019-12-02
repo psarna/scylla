@@ -50,19 +50,27 @@ namespace cql3 {
 
 struct index_target_identifier {
     ::shared_ptr<column_identifier> ident;
+    // Collection key is an optional field indicating that this identifier
+    // is a collection subscription rather than a regular column, e.g. my_map['key']
+    ::shared_ptr<constants::value> collection_key;
 
     struct raw {
         ::shared_ptr<column_identifier::raw> raw_ident;
-        explicit raw(::shared_ptr<column_identifier::raw> raw_ident) : raw_ident(raw_ident) {}
-        raw(::shared_ptr<column_identifier::raw> raw_ident) : raw_ident(raw_ident) {}
+        ::shared_ptr<constants::literal> raw_key;
+        explicit raw(::shared_ptr<column_identifier::raw> raw_ident) : raw_ident(raw_ident), raw_key() {}
+        raw(::shared_ptr<column_identifier::raw> raw_ident, ::shared_ptr<constants::literal> raw_key) : raw_ident(raw_ident), raw_key(raw_key) {}
         ::shared_ptr<index_target_identifier> prepare(schema_ptr s) const;
+        bool is_computed() const { return bool(raw_key); };
     };
 
     explicit index_target_identifier(::shared_ptr<column_identifier> ident) : ident(ident) {}
-    index_target_identifier(::shared_ptr<column_identifier> ident, ::shared_ptr<constants::value> key) : ident(ident) {}
+    index_target_identifier(::shared_ptr<column_identifier> ident, ::shared_ptr<constants::value> key) : ident(ident), collection_key(key) {}
 
     sstring to_string() const;
     Json::Value to_json() const;
+    bool is_computed() const {
+        return bool(collection_key);
+    }
 };
 
 namespace statements {
