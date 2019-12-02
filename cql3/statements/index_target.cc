@@ -49,14 +49,32 @@ namespace cql3 {
 
 ::shared_ptr<index_target_identifier> index_target_identifier::raw::prepare(schema_ptr s) const {
     auto ident = raw_ident->prepare_column_identifier(s);
-    return ::make_shared<index_target_identifier>(std::move(ident));
+    if (raw_key) {
+        const column_definition* map_column = s->get_column_definition(ident->name());
+        if (!map_column || !map_column->is_multi_cell()) {
+            throw std::runtime_error("Indexing an element of a non-collection column is not supported");
+        }
+        auto collection_type = dynamic_pointer_cast<const map_type_impl>(map_column->type);
+        if (!collection_type) {
+            throw std::runtime_error("Indexing an element is currently only supported for maps");
+        }
+        data_type key_type = collection_type->get_keys_type();
+        auto key_constant = static_pointer_cast<constants::value>(raw_key->prepare_as(key_type));
+        return ::make_shared<index_target_identifier>(std::move(ident), std::move(key_constant));
+    } else {
+        return ::make_shared<index_target_identifier>(std::move(ident));
+    }
 }
 
 sstring index_target_identifier::to_string() const {
-    return ident->to_string();
+    return ident->to_string() + (bool(collection_key) ? "_entry" : "");
 }
 
 Json::Value index_target_identifier::to_json() const {
+    if (collection_key) {
+        map_value_column_computation computation(ident->name(), *collection_key->_bytes.data());
+        return computation.to_json();
+    }
     return Json::Value(ident->to_string());
 }
 
