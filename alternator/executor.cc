@@ -299,7 +299,7 @@ static void describe_key_schema(rjson::value& parent, const schema& schema, std:
 
 }
 
-future<json::json_return_type> executor::describe_table(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::describe_table(client_state& client_state, std::string content) {
     _stats.api_operations.describe_table++;
     rjson::value request = rjson::parse(content);
     elogger.trace("Describing table {}", request);
@@ -375,10 +375,10 @@ future<json::json_return_type> executor::describe_table(client_state& client_sta
     rjson::value response = rjson::empty_object();
     rjson::set(response, "Table", std::move(table_description));
     elogger.trace("returning {}", response);
-    return make_ready_future<json::json_return_type>(make_jsonable(std::move(response)));
+    return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
 }
 
-future<json::json_return_type> executor::delete_table(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::delete_table(client_state& client_state, std::string content) {
     _stats.api_operations.delete_table++;
     rjson::value request = rjson::parse(content);
     elogger.trace("Deleting table {}", request);
@@ -398,7 +398,7 @@ future<json::json_return_type> executor::delete_table(client_state& client_state
         rjson::value response = rjson::empty_object();
         rjson::set(response, "TableDescription", std::move(table_description));
         elogger.trace("returning {}", response);
-        return make_ready_future<json::json_return_type>(make_jsonable(std::move(response)));
+        return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
     });
 }
 
@@ -481,7 +481,7 @@ static std::pair<std::string, std::string> parse_key_schema(const rjson::value& 
 }
 
 
-future<json::json_return_type> executor::create_table(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::create_table(client_state& client_state, std::string content) {
     _stats.api_operations.create_table++;
     rjson::value table_info = rjson::parse(content);
     elogger.trace("Creating table {}", table_info);
@@ -655,10 +655,10 @@ future<json::json_return_type> executor::create_table(client_state& client_state
             rjson::value status = rjson::empty_object();
             supplement_table_info(table_info, *schema);
             rjson::set(status, "TableDescription", std::move(table_info));
-            return make_ready_future<json::json_return_type>(make_jsonable(std::move(status)));
+            return make_ready_future<executor::request_return_type>(make_jsonable(std::move(status)));
         });
     }).handle_exception_type([table_name = std::move(table_name)] (exceptions::already_exists_exception&) {
-        return make_exception_future<json::json_return_type>(
+        return make_exception_future<executor::request_return_type>(
                 api_error("ResourceInUseException",
                         format("Table {} already exists", table_name)));
     });
@@ -749,7 +749,7 @@ static future<std::unique_ptr<rjson::value>> maybe_get_previous_item(
         bool need_read_before_write,
         alternator::stats& stats);
 
-future<json::json_return_type> executor::put_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::put_item(client_state& client_state, std::string content) {
     _stats.api_operations.put_item++;
     auto start_time = std::chrono::steady_clock::now();
     rjson::value update_info = rjson::parse(content);
@@ -781,7 +781,7 @@ future<json::json_return_type> executor::put_item(client_state& client_state, st
         return _proxy.mutate(std::vector<mutation>{std::move(m)}, db::consistency_level::LOCAL_QUORUM, default_timeout(), client_state.get_trace_state(), empty_service_permit()).then([this, start_time] () {
             _stats.api_operations.put_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.put_item_latency._count + 1);
             // Without special options on what to return, PutItem returns nothing.
-            return make_ready_future<json::json_return_type>(json_string(""));
+            return make_ready_future<executor::request_return_type>(json_string(""));
         });
     });
 
@@ -806,7 +806,7 @@ static mutation make_delete_item_mutation(const rjson::value& key, schema_ptr sc
     return m;
 }
 
-future<json::json_return_type> executor::delete_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::delete_item(client_state& client_state, std::string content) {
     _stats.api_operations.delete_item++;
     auto start_time = std::chrono::steady_clock::now();
     rjson::value update_info = rjson::parse(content);
@@ -838,7 +838,7 @@ future<json::json_return_type> executor::delete_item(client_state& client_state,
         return _proxy.mutate(std::vector<mutation>{std::move(m)}, db::consistency_level::LOCAL_QUORUM, default_timeout(), client_state.get_trace_state(), empty_service_permit()).then([this, start_time] () {
             _stats.api_operations.delete_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.delete_item_latency._count + 1);
             // Without special options on what to return, DeleteItem returns nothing.
-            return make_ready_future<json::json_return_type>(json_string(""));
+            return make_ready_future<executor::request_return_type>(json_string(""));
         });
     });
 
@@ -868,7 +868,7 @@ struct primary_key_equal {
     }
 };
 
-future<json::json_return_type> executor::batch_write_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::batch_write_item(client_state& client_state, std::string content) {
     _stats.api_operations.batch_write_item++;
     rjson::value batch_info = rjson::parse(content);
     rjson::value& request_items = batch_info["RequestItems"];
@@ -917,7 +917,7 @@ future<json::json_return_type> executor::batch_write_item(client_state& client_s
         // due to throttling. TODO(sarna): Consider UnprocessedItems when returning.
         rjson::value ret = rjson::empty_object();
         rjson::set(ret, "UnprocessedItems", rjson::empty_object());
-        return make_ready_future<json::json_return_type>(make_jsonable(std::move(ret)));
+        return make_ready_future<executor::request_return_type>(make_jsonable(std::move(ret)));
     });
 }
 
@@ -1410,7 +1410,7 @@ static future<std::unique_ptr<rjson::value>> maybe_get_previous_item(
 }
 
 
-future<json::json_return_type> executor::update_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::update_item(client_state& client_state, std::string content) {
     _stats.api_operations.update_item++;
     auto start_time = std::chrono::steady_clock::now();
     rjson::value update_info = rjson::parse(content);
@@ -1606,7 +1606,7 @@ future<json::json_return_type> executor::update_item(client_state& client_state,
         return _proxy.mutate(std::vector<mutation>{std::move(m)}, db::consistency_level::LOCAL_QUORUM, default_timeout(), client_state.get_trace_state(), empty_service_permit()).then([this, start_time] () {
             // Without special options on what to return, UpdateItem returns nothing.
             _stats.api_operations.update_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.update_item_latency._count + 1);
-            return make_ready_future<json::json_return_type>(json_string(""));
+            return make_ready_future<executor::request_return_type>(json_string(""));
         });
     });
 }
@@ -1630,7 +1630,7 @@ static db::consistency_level get_read_consistency(const rjson::value& request) {
     return consistent_read ? db::consistency_level::LOCAL_QUORUM : db::consistency_level::LOCAL_ONE;
 }
 
-future<json::json_return_type> executor::get_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::get_item(client_state& client_state, std::string content) {
     _stats.api_operations.get_item++;
     auto start_time = std::chrono::steady_clock::now();
     rjson::value table_info = rjson::parse(content);
@@ -1669,11 +1669,11 @@ future<json::json_return_type> executor::get_item(client_state& client_state, st
     return _proxy.query(schema, std::move(command), std::move(partition_ranges), cl, service::storage_proxy::coordinator_query_options(default_timeout(), empty_service_permit(), client_state)).then(
             [this, schema, partition_slice = std::move(partition_slice), selection = std::move(selection), attrs_to_get = std::move(attrs_to_get), start_time = std::move(start_time)] (service::storage_proxy::coordinator_query_result qr) mutable {
         _stats.api_operations.get_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.get_item_latency._count + 1);
-        return make_ready_future<json::json_return_type>(make_jsonable(describe_item(schema, partition_slice, *selection, std::move(qr.query_result), std::move(attrs_to_get))));
+        return make_ready_future<executor::request_return_type>(make_jsonable(describe_item(schema, partition_slice, *selection, std::move(qr.query_result), std::move(attrs_to_get))));
     });
 }
 
-future<json::json_return_type> executor::batch_get_item(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::batch_get_item(client_state& client_state, std::string content) {
     // FIXME: In this implementation, an unbounded batch size can cause
     // unbounded response JSON object to be buffered in memory, unbounded
     // parallelism of the requests, and unbounded amount of non-preemptable
@@ -1758,7 +1758,7 @@ future<json::json_return_type> executor::batch_get_item(client_state& client_sta
                 rjson::push_back(response["Responses"][std::get<0>(t)], std::move(*std::get<1>(t)));
             }
         }
-        return make_ready_future<json::json_return_type>(make_jsonable(std::move(response)));
+        return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
     });
 }
 
@@ -1858,7 +1858,7 @@ static rjson::value encode_paging_state(const schema& schema, const service::pag
     return last_evaluated_key;
 }
 
-static future<json::json_return_type> do_query(schema_ptr schema,
+static future<executor::request_return_type> do_query(schema_ptr schema,
         const rjson::value* exclusive_start_key,
         dht::partition_range_vector&& partition_ranges,
         std::vector<query::clustering_range>&& ck_bounds,
@@ -1910,7 +1910,7 @@ static future<json::json_return_type> do_query(schema_ptr schema,
         if (paging_state) {
             rjson::set(items, "LastEvaluatedKey", encode_paging_state(*schema, *paging_state));
         }
-        return make_ready_future<json::json_return_type>(make_jsonable(std::move(items)));
+        return make_ready_future<executor::request_return_type>(make_jsonable(std::move(items)));
     });
 }
 
@@ -1919,7 +1919,7 @@ static future<json::json_return_type> do_query(schema_ptr schema,
 // 2. Filtering - by passing appropriately created restrictions to pager as a last parameter
 // 3. Proper timeouts instead of gc_clock::now() and db::no_timeout
 // 4. Implement parallel scanning via Segments
-future<json::json_return_type> executor::scan(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::scan(client_state& client_state, std::string content) {
     _stats.api_operations.scan++;
     rjson::value request_info = rjson::parse(content);
     elogger.trace("Scanning {}", request_info);
@@ -2079,7 +2079,7 @@ calculate_bounds(schema_ptr schema, const rjson::value& conditions) {
     return {std::move(partition_ranges), std::move(ck_bounds)};
 }
 
-future<json::json_return_type> executor::query(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::query(client_state& client_state, std::string content) {
     _stats.api_operations.query++;
     rjson::value request_info = rjson::parse(content);
     elogger.trace("Querying {}", request_info);
@@ -2138,7 +2138,7 @@ static void validate_limit(int limit) {
     }
 }
 
-future<json::json_return_type> executor::list_tables(client_state& client_state, std::string content) {
+future<executor::request_return_type> executor::list_tables(client_state& client_state, std::string content) {
     _stats.api_operations.list_tables++;
     rjson::value table_info = rjson::parse(content);
     elogger.trace("Listing tables {}", table_info);
@@ -2186,10 +2186,10 @@ future<json::json_return_type> executor::list_tables(client_state& client_state,
         rjson::set(response, "LastEvaluatedTableName", rjson::copy(last_table_name));
     }
 
-    return make_ready_future<json::json_return_type>(make_jsonable(std::move(response)));
+    return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
 }
 
-future<json::json_return_type> executor::describe_endpoints(client_state& client_state, std::string content, std::string host_header) {
+future<executor::request_return_type> executor::describe_endpoints(client_state& client_state, std::string content, std::string host_header) {
     _stats.api_operations.describe_endpoints++;
     rjson::value response = rjson::empty_object();
     // Without having any configuration parameter to say otherwise, we tell
@@ -2205,7 +2205,7 @@ future<json::json_return_type> executor::describe_endpoints(client_state& client
     rjson::push_back(response["Endpoints"], rjson::empty_object());
     rjson::set(response["Endpoints"][0], "Address", rjson::from_string(host_header));
     rjson::set(response["Endpoints"][0], "CachePeriodInMinutes", rjson::value(1440));
-    return make_ready_future<json::json_return_type>(make_jsonable(std::move(response)));
+    return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
 }
 
 // Create the keyspace in which we put all Alternator tables, if it doesn't
