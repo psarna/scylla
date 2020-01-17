@@ -104,16 +104,17 @@ static constexpr int max_table_name_length = 222;
 // specifies that table names "names must be between 3 and 255 characters long
 // and can contain only the following characters: a-z, A-Z, 0-9, _ (underscore), - (dash), . (dot)
 // validate_table_name throws the appropriate api_error if this validation fails.
-static void validate_table_name(const std::string& name) {
+static std::optional<api_error> validate_table_name(const std::string& name) {
     if (name.length() < 3 || name.length() > max_table_name_length) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("TableName must be at least 3 characters long and at most {} characters long", max_table_name_length));
     }
     static const std::regex valid_table_name_chars ("[a-zA-Z0-9_.-]*");
     if (!std::regex_match(name.c_str(), valid_table_name_chars)) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 "TableName must satisfy regular expression pattern: [a-zA-Z0-9_.-]+");
     }
+    return {};
 }
 
 // In DynamoDB index names are local to a table, while in Scylla, materialized
@@ -125,25 +126,25 @@ static void validate_table_name(const std::string& name) {
 // instead of each component individually as DynamoDB does.
 // The view_name() function assumes the table_name has already been validated
 // but validates the legality of index_name and the combination of both.
-static std::string view_name(const std::string& table_name, const std::string& index_name, const std::string& delim = ":") {
+static std::variant<std::string, api_error> view_name(const std::string& table_name, const std::string& index_name, const std::string& delim = ":") {
     static const std::regex valid_index_name_chars ("[a-zA-Z0-9_.-]*");
     if (index_name.length() < 3) {
-        throw api_error("ValidationException", "IndexName must be at least 3 characters long");
+        return api_error("ValidationException", "IndexName must be at least 3 characters long");
     }
     if (!std::regex_match(index_name.c_str(), valid_index_name_chars)) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("IndexName '{}' must satisfy regular expression pattern: [a-zA-Z0-9_.-]+", index_name));
     }
     std::string ret = table_name + delim + index_name;
     if (ret.length() > max_table_name_length) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("The total length of TableName ('{}') and IndexName ('{}') cannot exceed {} characters",
                         table_name, index_name, max_table_name_length - delim.size()));
     }
     return ret;
 }
 
-static std::string lsi_name(const std::string& table_name, const std::string& index_name) {
+static std::variant<std::string, api_error> lsi_name(const std::string& table_name, const std::string& index_name) {
     return view_name(table_name, index_name, "!:");
 }
 
@@ -153,14 +154,16 @@ static std::string lsi_name(const std::string& table_name, const std::string& in
  *  and api_error in case the table name is missing or not a string, or
  *  doesn't pass validate_table_name().
  */
-static std::string get_table_name(const rjson::value& request) {
+static std::variant<std::string, api_error> get_table_name(const rjson::value& request) {
     const rjson::value& table_name_value = rjson::get(request, "TableName");
     if (!table_name_value.IsString()) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 "Missing or non-string TableName field in request");
     }
     std::string table_name = table_name_value.GetString();
-    validate_table_name(table_name);
+    if (auto err = validate_table_name(table_name)) {
+        return *err;
+    }
     return table_name;
 }
 
@@ -172,12 +175,16 @@ static std::string get_table_name(const rjson::value& request) {
  *  name is missing, invalid or the table doesn't exist. If everything is
  *  successful, it returns the table's schema.
  */
-static schema_ptr get_table(service::storage_proxy& proxy, const rjson::value& request) {
-    std::string table_name = get_table_name(request);
+static std::variant<schema_ptr, api_error> get_table(service::storage_proxy& proxy, const rjson::value& request) {
+    auto maybe_table_name = get_table_name(request);
+    if (std::holds_alternative<api_error>(maybe_table_name)) {
+        return std::get<api_error>(maybe_table_name);
+    }
+    std::string table_name = std::get<std::string>(maybe_table_name);
     try {
         return proxy.get_db().local().find_schema(executor::KEYSPACE_NAME, table_name);
-    } catch(no_such_column_family&) {
-        throw api_error("ResourceNotFoundException",
+    } catch (no_such_column_family&) {
+        return api_error("ResourceNotFoundException",
                 format("Requested resource not found: Table: {} not found", table_name));
     }
 }
@@ -186,23 +193,35 @@ static schema_ptr get_table(service::storage_proxy& proxy, const rjson::value& r
 // a table or a materialized view from which to read, based on the TableName
 // and optional IndexName in the request. Only requests like Query and Scan
 // which allow IndexName should use this function.
-static schema_ptr get_table_or_view(service::storage_proxy& proxy, const rjson::value& request) {
-    std::string table_name = get_table_name(request);
+static std::variant<schema_ptr, api_error> get_table_or_view(service::storage_proxy& proxy, const rjson::value& request) {
+    auto maybe_table_name = get_table_name(request);
+    if (std::holds_alternative<api_error>(maybe_table_name)) {
+        return std::get<api_error>(maybe_table_name);
+    }
+    std::string table_name = std::get<std::string>(maybe_table_name);
     const rjson::value* index_name = rjson::find(request, "IndexName");
     std::string orig_table_name;
     if (index_name) {
         if (index_name->IsString()) {
             orig_table_name = std::move(table_name);
-            table_name = view_name(orig_table_name, index_name->GetString());
+            auto maybe_view_name = view_name(orig_table_name, index_name->GetString());
+            if (std::holds_alternative<api_error>(maybe_view_name)) {
+                return std::get<api_error>(maybe_view_name);
+            }
+            table_name = std::get<std::string>(maybe_view_name);
         } else {
-            throw api_error("ValidationException",
+            return api_error("ValidationException",
                     format("Non-string IndexName '{}'", index_name->GetString()));
         }
     }
 
     // If no tables for global indexes were found, the index may be local
     if (!proxy.get_db().local().has_schema(executor::KEYSPACE_NAME, table_name)) {
-        table_name = lsi_name(orig_table_name, index_name->GetString());
+        auto maybe_lsi_name = lsi_name(orig_table_name, index_name->GetString());
+        if (std::holds_alternative<api_error>(maybe_lsi_name)) {
+            return std::get<api_error>(maybe_lsi_name);
+        }
+        table_name = std::get<std::string>(maybe_lsi_name);
     }
 
     try {
@@ -213,14 +232,14 @@ static schema_ptr get_table_or_view(service::storage_proxy& proxy, const rjson::
             // base table doesn't exist (ResourceNotFoundException) or it
             // does exist but the index does not (ValidationException).
             if (proxy.get_db().local().has_schema(executor::KEYSPACE_NAME, orig_table_name)) {
-                throw api_error("ValidationException",
+                return api_error("ValidationException",
                     format("Requested resource not found: Index '{}' for table '{}'", index_name->GetString(), orig_table_name));
             } else {
-                throw api_error("ResourceNotFoundException",
+                return api_error("ResourceNotFoundException",
                     format("Requested resource not found: Table: {} not found", orig_table_name));
             }
         } else {
-            throw api_error("ResourceNotFoundException",
+            return api_error("ResourceNotFoundException",
                 format("Requested resource not found: Table: {} not found", table_name));
         }
     }
@@ -228,13 +247,13 @@ static schema_ptr get_table_or_view(service::storage_proxy& proxy, const rjson::
 
 // Convenience function for getting the value of a string attribute, or a
 // default value if it is missing. If the attribute exists, but is not a
-// string, a descriptive api_error is thrown.
-static std::string get_string_attribute(const rjson::value& value, rjson::string_ref_type attribute_name, const char* default_return) {
+// string, a descriptive api_error is returned.
+static std::variant<std::string, api_error> get_string_attribute(const rjson::value& value, rjson::string_ref_type attribute_name, const char* default_return) {
     const rjson::value* attribute_value = rjson::find(value, attribute_name);
     if (!attribute_value)
         return default_return;
     if (!attribute_value->IsString()) {
-        throw api_error("ValidationException", format("Expected string value for attribute {}, got: {}",
+        return api_error("ValidationException", format("Expected string value for attribute {}, got: {}",
                 attribute_name, value));
     }
     return attribute_value->GetString();
@@ -242,14 +261,14 @@ static std::string get_string_attribute(const rjson::value& value, rjson::string
 
 // Convenience function for getting the value of a boolean attribute, or a
 // default value if it is missing. If the attribute exists, but is not a
-// bool, a descriptive api_error is thrown.
-static bool get_bool_attribute(const rjson::value& value, rjson::string_ref_type attribute_name, bool default_return) {
+// bool, a descriptive api_error is returned.
+static std::variant<bool, api_error> get_bool_attribute(const rjson::value& value, rjson::string_ref_type attribute_name, bool default_return) {
     const rjson::value* attribute_value = rjson::find(value, attribute_name);
     if (!attribute_value) {
         return default_return;
     }
     if (!attribute_value->IsBool()) {
-        throw api_error("ValidationException", format("Expected boolean value for attribute {}, got: {}",
+        return api_error("ValidationException", format("Expected boolean value for attribute {}, got: {}",
                 attribute_name, value));
     }
     return attribute_value->GetBool();
@@ -257,13 +276,13 @@ static bool get_bool_attribute(const rjson::value& value, rjson::string_ref_type
 
 // Convenience function for getting the value of an integer attribute, or
 // an empty optional if it is missing. If the attribute exists, but is not
-// an integer, a descriptive api_error is thrown.
-static std::optional<int> get_int_attribute(const rjson::value& value, rjson::string_ref_type attribute_name) {
+// an integer, a descriptive api_error is returned.
+static std::variant<std::optional<int>, api_error> get_int_attribute(const rjson::value& value, rjson::string_ref_type attribute_name) {
     const rjson::value* attribute_value = rjson::find(value, attribute_name);
     if (!attribute_value)
         return {};
     if (!attribute_value->IsInt()) {
-        throw api_error("ValidationException", format("Expected integer value for attribute {}, got: {}",
+        return api_error("ValidationException", format("Expected integer value for attribute {}, got: {}",
                 attribute_name, value));
     }
     return attribute_value->GetInt();
@@ -304,7 +323,11 @@ future<executor::request_return_type> executor::describe_table(client_state& cli
     rjson::value request = rjson::parse(content);
     elogger.trace("Describing table {}", request);
 
-    schema_ptr schema = get_table(_proxy, request);
+    auto maybe_schema = get_table(_proxy, request);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
 
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
@@ -383,12 +406,16 @@ future<executor::request_return_type> executor::delete_table(client_state& clien
     rjson::value request = rjson::parse(content);
     elogger.trace("Deleting table {}", request);
 
-    std::string table_name = get_table_name(request);
+    auto maybe_table_name = get_table_name(request);
+    if (std::holds_alternative<api_error>(maybe_table_name)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_table_name));
+    }
+    std::string table_name = std::get<std::string>(maybe_table_name);
     tracing::add_table_name(client_state.get_trace_state(), KEYSPACE_NAME, table_name);
 
     if (!_proxy.get_db().local().has_schema(KEYSPACE_NAME, table_name)) {
-        throw api_error("ResourceNotFoundException",
-                format("Requested resource not found: Table: {} not found", table_name));
+        return make_ready_future<request_return_type>(api_error("ResourceNotFoundException",
+                format("Requested resource not found: Table: {} not found", table_name)));
     }
     return _mm.announce_column_family_drop(KEYSPACE_NAME, table_name, false, service::migration_manager::drop_views::yes).then([table_name = std::move(table_name)] {
         // FIXME: need more attributes?
@@ -402,7 +429,7 @@ future<executor::request_return_type> executor::delete_table(client_state& clien
     });
 }
 
-static data_type parse_key_type(const std::string& type) {
+static std::variant<data_type, api_error> parse_key_type(const std::string& type) {
     // Note that keys are only allowed to be string, blob or number (S/B/N).
     // The other types: boolean and various lists or sets - are not allowed.
     if (type.length() == 1) {
@@ -412,28 +439,32 @@ static data_type parse_key_type(const std::string& type) {
         case 'N': return decimal_type; // FIXME: use a specialized Alternator type, not the general "decimal_type".
         }
     }
-    throw api_error("ValidationException",
+    return api_error("ValidationException",
             format("Invalid key type '{}', can only be S, B or N.", type));
 }
 
 
-static void add_column(schema_builder& builder, const std::string& name, const rjson::value& attribute_definitions, column_kind kind) {
+static std::optional<api_error> add_column(schema_builder& builder, const std::string& name, const rjson::value& attribute_definitions, column_kind kind) {
     // FIXME: Currently, the column name ATTRS_COLUMN_NAME is not allowed
     // because we use it for our untyped attribute map, and we can't have a
     // second column with the same name. We should fix this, by renaming
     // some column names which we want to reserve.
     if (name == executor::ATTRS_COLUMN_NAME) {
-        throw api_error("ValidationException", format("Column name '{}' is currently reserved. FIXME.", name));
+        return api_error("ValidationException", format("Column name '{}' is currently reserved. FIXME.", name));
     }
     for (auto it = attribute_definitions.Begin(); it != attribute_definitions.End(); ++it) {
         const rjson::value& attribute_info = *it;
         if (attribute_info["AttributeName"].GetString() == name) {
             auto type = attribute_info["AttributeType"].GetString();
-            builder.with_column(to_bytes(name), parse_key_type(type), kind);
-            return;
+            auto parsed_key_type = parse_key_type(type);
+            if (std::holds_alternative<api_error>(parsed_key_type)) {
+                return std::get<api_error>(parsed_key_type);
+            }
+            builder.with_column(to_bytes(name), std::get<data_type>(parsed_key_type), kind);
+            return {};
         }
     }
-    throw api_error("ValidationException",
+    return api_error("ValidationException",
             format("KeySchema key '{}' missing in AttributeDefinitions", name));
 }
 
@@ -442,42 +473,42 @@ static void add_column(schema_builder& builder, const std::string& name, const r
 // the HASH key name, and the second one, if exists, must be a RANGE key name.
 // The function returns the two column names - the first is the hash key
 // and always present, the second is the range key and may be an empty string.
-static std::pair<std::string, std::string> parse_key_schema(const rjson::value& obj) {
+static std::variant<std::pair<std::string, std::string>, api_error> parse_key_schema(const rjson::value& obj) {
     const rjson::value *key_schema;
     if (!obj.IsObject() || !(key_schema = rjson::find(obj, "KeySchema"))) {
-        throw api_error("ValidationException", "Missing KeySchema member");
+        return api_error("ValidationException", "Missing KeySchema member");
     }
     if (!key_schema->IsArray() || key_schema->Size() < 1 || key_schema->Size() > 2) {
-        throw api_error("ValidationException", "KeySchema must list exactly one or two key columns");
+        return api_error("ValidationException", "KeySchema must list exactly one or two key columns");
     }
     if (!(*key_schema)[0].IsObject()) {
-        throw api_error("ValidationException", "First element of KeySchema must be an object");
+        return api_error("ValidationException", "First element of KeySchema must be an object");
     }
     const rjson::value *v = rjson::find((*key_schema)[0], "KeyType");
     if (!v || !v->IsString() || v->GetString() != std::string("HASH")) {
-        throw api_error("ValidationException", "First key in KeySchema must be a HASH key");
+        return api_error("ValidationException", "First key in KeySchema must be a HASH key");
     }
     v = rjson::find((*key_schema)[0], "AttributeName");
     if (!v || !v->IsString()) {
-        throw api_error("ValidationException", "First key in KeySchema must have string AttributeName");
+        return api_error("ValidationException", "First key in KeySchema must have string AttributeName");
     }
     std::string hash_key = v->GetString();
     std::string range_key;
     if (key_schema->Size() == 2) {
         if (!(*key_schema)[1].IsObject()) {
-            throw api_error("ValidationException", "Second element of KeySchema must be an object");
+            return api_error("ValidationException", "Second element of KeySchema must be an object");
         }
         v = rjson::find((*key_schema)[1], "KeyType");
         if (!v || !v->IsString() || v->GetString() != std::string("RANGE")) {
-            throw api_error("ValidationException", "Second key in KeySchema must be a RANGE key");
+            return api_error("ValidationException", "Second key in KeySchema must be a RANGE key");
         }
         v = rjson::find((*key_schema)[1], "AttributeName");
         if (!v || !v->IsString()) {
-            throw api_error("ValidationException", "Second key in KeySchema must have string AttributeName");
+            return api_error("ValidationException", "Second key in KeySchema must have string AttributeName");
         }
         range_key = v->GetString();
     }
-    return {hash_key, range_key};
+    return std::pair<std::string, std::string>{hash_key, range_key};
 }
 
 
@@ -485,32 +516,52 @@ future<executor::request_return_type> executor::create_table(client_state& clien
     _stats.api_operations.create_table++;
     rjson::value table_info = rjson::parse(content);
     elogger.trace("Creating table {}", table_info);
-    std::string table_name = get_table_name(table_info);
+    auto maybe_table_name = get_table_name(table_info);
+    if (std::holds_alternative<api_error>(maybe_table_name)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_table_name));
+    }
+    std::string table_name = std::get<std::string>(maybe_table_name);
+
     const rjson::value& attribute_definitions = table_info["AttributeDefinitions"];
 
     tracing::add_table_name(client_state.get_trace_state(), KEYSPACE_NAME, table_name);
 
     schema_builder builder(KEYSPACE_NAME, table_name);
-    auto [hash_key, range_key] = parse_key_schema(table_info);
-    add_column(builder, hash_key, attribute_definitions, column_kind::partition_key);
+    auto maybe_key_schema = parse_key_schema(table_info);
+    if (std::holds_alternative<api_error>(maybe_key_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_key_schema));
+    }
+    auto [hash_key, range_key] = std::get<std::pair<std::string, std::string>>(maybe_key_schema);
+
+    auto err = add_column(builder, hash_key, attribute_definitions, column_kind::partition_key);
+    if (err) {
+        return make_ready_future<executor::request_return_type>(*err);
+    }
     if (!range_key.empty()) {
-        add_column(builder, range_key, attribute_definitions, column_kind::clustering_key);
+        auto err = add_column(builder, range_key, attribute_definitions, column_kind::clustering_key);
+        if (err) {
+            return make_ready_future<executor::request_return_type>(*err);
+        }
     }
     builder.with_column(bytes(ATTRS_COLUMN_NAME), attrs_type(), column_kind::regular_column);
 
     // Alternator does not yet support billing or throughput limitations, but
     // let's verify that BillingMode is at least legal.
-    std::string billing_mode = get_string_attribute(table_info, "BillingMode", "PROVISIONED");
+    auto maybe_billing_mode = get_string_attribute(table_info, "BillingMode", "PROVISIONED");
+    if (std::holds_alternative<api_error>(maybe_billing_mode)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_billing_mode));
+    }
+    std::string billing_mode = std::get<std::string>(maybe_billing_mode);
     if (billing_mode == "PAY_PER_REQUEST") {
         if (rjson::find(table_info, "ProvisionedThroughput")) {
-            throw api_error("ValidationException", "When BillingMode=PAY_PER_REQUEST, ProvisionedThroughput cannot be specified.");
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", "When BillingMode=PAY_PER_REQUEST, ProvisionedThroughput cannot be specified."));
         }
     } else if (billing_mode == "PROVISIONED") {
         if (!rjson::find(table_info, "ProvisionedThroughput")) {
-            throw api_error("ValidationException", "When BillingMode=PROVISIONED, ProvisionedThroughput must be specified.");
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", "When BillingMode=PROVISIONED, ProvisionedThroughput must be specified."));
         }
     } else {
-        throw api_error("ValidationException", "Unknown BillingMode={}. Must be PAY_PER_REQUEST or PROVISIONED.");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Unknown BillingMode={}. Must be PAY_PER_REQUEST or PROVISIONED."));
     }
 
     schema_ptr partial_schema = builder.build();
@@ -523,25 +574,39 @@ future<executor::request_return_type> executor::create_table(client_state& clien
     std::vector<sstring> where_clauses;
     if (gsi) {
         if (!gsi->IsArray()) {
-            throw api_error("ValidationException", "GlobalSecondaryIndexes must be an array.");
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", "GlobalSecondaryIndexes must be an array."));
         }
         for (const rjson::value& g : gsi->GetArray()) {
             const rjson::value* index_name = rjson::find(g, "IndexName");
             if (!index_name || !index_name->IsString()) {
-                throw api_error("ValidationException", "GlobalSecondaryIndexes IndexName must be a string.");
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", "GlobalSecondaryIndexes IndexName must be a string."));
             }
-            std::string vname(view_name(table_name, index_name->GetString()));
+            auto maybe_view_name = view_name(table_name, index_name->GetString());
+            if (std::holds_alternative<api_error>(maybe_view_name)) {
+                return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_view_name));
+            }
+            std::string vname(std::get<std::string>(maybe_view_name));
             elogger.trace("Adding GSI {}", index_name->GetString());
             // FIXME: read and handle "Projection" parameter. This will
             // require the MV code to copy just parts of the attrs map.
             schema_builder view_builder(KEYSPACE_NAME, vname);
-            auto [view_hash_key, view_range_key] = parse_key_schema(g);
+            auto maybe_key_schema = parse_key_schema(g);
+            if (std::holds_alternative<api_error>(maybe_key_schema)) {
+                return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_key_schema));
+            }
+            auto [view_hash_key, view_range_key] = std::get<std::pair<std::string, std::string>>(maybe_key_schema);
             if (partial_schema->get_column_definition(to_bytes(view_hash_key)) == nullptr) {
                 // A column that exists in a global secondary index is upgraded from being a map entry
                 // to having a regular column definition in the base schema
-                add_column(builder, view_hash_key, attribute_definitions, column_kind::regular_column);
+                auto err = add_column(builder, view_hash_key, attribute_definitions, column_kind::regular_column);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
-            add_column(view_builder, view_hash_key, attribute_definitions, column_kind::partition_key);
+            auto err = add_column(view_builder, view_hash_key, attribute_definitions, column_kind::partition_key);
+            if (err) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
             if (!view_range_key.empty()) {
                 if (partial_schema->get_column_definition(to_bytes(view_range_key)) == nullptr) {
                     // A column that exists in a global secondary index is upgraded from being a map entry
@@ -551,18 +616,30 @@ future<executor::request_return_type> executor::create_table(client_state& clien
                         // we use underneath do not allow more than 1 base regular column to be part of the MV key
                         elogger.warn("Only 1 regular column from the base table should be used in the GSI key in order to ensure correct liveness management without assumptions");
                     }
-                    add_column(builder, view_range_key, attribute_definitions, column_kind::regular_column);
+                    auto err = add_column(builder, view_range_key, attribute_definitions, column_kind::regular_column);
+                    if (err) {
+                        return make_ready_future<executor::request_return_type>(*err);
+                    }
                 }
-                add_column(view_builder, view_range_key, attribute_definitions, column_kind::clustering_key);
+                auto err = add_column(view_builder, view_range_key, attribute_definitions, column_kind::clustering_key);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
             // Base key columns which aren't part of the index's key need to
             // be added to the view nontheless, as (additional) clustering
             // key(s).
             if  (hash_key != view_hash_key && hash_key != view_range_key) {
-                add_column(view_builder, hash_key, attribute_definitions, column_kind::clustering_key);
+                auto err = add_column(view_builder, hash_key, attribute_definitions, column_kind::clustering_key);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
             if  (!range_key.empty() && range_key != view_hash_key && range_key != view_range_key) {
-                add_column(view_builder, range_key, attribute_definitions, column_kind::clustering_key);
+                auto err = add_column(view_builder, range_key, attribute_definitions, column_kind::clustering_key);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
             sstring where_clause = "\"" + view_hash_key + "\" IS NOT NULL";
             if (!view_range_key.empty()) {
@@ -576,38 +653,59 @@ future<executor::request_return_type> executor::create_table(client_state& clien
     const rjson::value* lsi = rjson::find(table_info, "LocalSecondaryIndexes");
     if (lsi) {
         if (!lsi->IsArray()) {
-            throw api_error("ValidationException", "LocalSecondaryIndexes must be an array.");
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", "LocalSecondaryIndexes must be an array."));
         }
         for (const rjson::value& l : lsi->GetArray()) {
             const rjson::value* index_name = rjson::find(l, "IndexName");
             if (!index_name || !index_name->IsString()) {
-                throw api_error("ValidationException", "LocalSecondaryIndexes IndexName must be a string.");
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", "LocalSecondaryIndexes IndexName must be a string."));
             }
-            std::string vname(lsi_name(table_name, index_name->GetString()));
+            auto maybe_view_name = lsi_name(table_name, index_name->GetString());
+            if (std::holds_alternative<api_error>(maybe_view_name)) {
+                return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_view_name));
+            }
+            std::string vname(std::get<std::string>(maybe_view_name));
             elogger.trace("Adding LSI {}", index_name->GetString());
             // FIXME: read and handle "Projection" parameter. This will
             // require the MV code to copy just parts of the attrs map.
             schema_builder view_builder(KEYSPACE_NAME, vname);
-            auto [view_hash_key, view_range_key] = parse_key_schema(l);
-            if (view_hash_key != hash_key) {
-                throw api_error("ValidationException", "LocalSecondaryIndex hash key must match the base table hash key");
+            auto maybe_key_schema = parse_key_schema(l);
+            if (std::holds_alternative<api_error>(maybe_key_schema)) {
+                return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_key_schema));
             }
-            add_column(view_builder, view_hash_key, attribute_definitions, column_kind::partition_key);
+            auto [view_hash_key, view_range_key] = std::get<std::pair<std::string, std::string>>(maybe_key_schema);
+
+            if (view_hash_key != hash_key) {
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", "LocalSecondaryIndex hash key must match the base table hash key"));
+            }
+            auto err = add_column(view_builder, view_hash_key, attribute_definitions, column_kind::partition_key);
+            if (err) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
             if (view_range_key.empty()) {
-                throw api_error("ValidationException", "LocalSecondaryIndex must specify a sort key");
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", "LocalSecondaryIndex must specify a sort key"));
             }
             if (view_range_key == hash_key) {
-                throw api_error("ValidationException", "LocalSecondaryIndex sort key cannot be the same as hash key");
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", "LocalSecondaryIndex sort key cannot be the same as hash key"));
               }
             if (view_range_key != range_key) {
-                add_column(builder, view_range_key, attribute_definitions, column_kind::regular_column);
+                auto err = add_column(builder, view_range_key, attribute_definitions, column_kind::regular_column);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
-            add_column(view_builder, view_range_key, attribute_definitions, column_kind::clustering_key);
+            err = add_column(view_builder, view_range_key, attribute_definitions, column_kind::clustering_key);
+            if (err) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
             // Base key columns which aren't part of the index's key need to
             // be added to the view nontheless, as (additional) clustering
             // key(s).
             if  (!range_key.empty() && view_range_key != range_key) {
-                add_column(view_builder, range_key, attribute_definitions, column_kind::clustering_key);
+                auto err = add_column(view_builder, range_key, attribute_definitions, column_kind::clustering_key);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
             view_builder.with_column(bytes(ATTRS_COLUMN_NAME), attrs_type(), column_kind::regular_column);
             // Note above we don't need to add virtual columns, as all
@@ -622,10 +720,10 @@ future<executor::request_return_type> executor::create_table(client_state& clien
         }
     }
     if (rjson::find(table_info, "SSESpecification")) {
-        throw api_error("ValidationException", "SSESpecification: configuring encryption-at-rest is not yet supported.");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "SSESpecification: configuring encryption-at-rest is not yet supported."));
     }
     if (rjson::find(table_info, "StreamSpecification")) {
-        throw api_error("ValidationException", "StreamSpecification: streams (CDC) is not yet supported.");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "StreamSpecification: streams (CDC) is not yet supported."));
     }
     // FIXME: we should read the Tags property, and save them somewhere.
 
@@ -755,16 +853,24 @@ future<executor::request_return_type> executor::put_item(client_state& client_st
     rjson::value update_info = rjson::parse(content);
     elogger.trace("Updating value {}", update_info);
 
-    schema_ptr schema = get_table(_proxy, update_info);
+    auto maybe_schema = get_table(_proxy, update_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
+
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
     if (rjson::find(update_info, "ConditionExpression")) {
-        throw api_error("ValidationException", "ConditionExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "ConditionExpression is not yet implemented in alternator"));
     }
     auto return_values = get_string_attribute(update_info, "ReturnValues", "NONE");
-    if (return_values != "NONE") {
+    if (std::holds_alternative<api_error>(return_values)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(return_values));
+    }
+    if (std::get<std::string>(return_values) != "NONE") {
         // FIXME: Need to support also the ALL_OLD option. See issue #5053.
-        throw api_error("ValidationException", format("Unsupported ReturnValues={} for PutItem operation", return_values));
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", format("Unsupported ReturnValues={} for PutItem operation", std::get<std::string>(return_values))));
     }
     const bool has_expected = update_info.HasMember("Expected");
 
@@ -790,16 +896,19 @@ future<executor::request_return_type> executor::put_item(client_state& client_st
 // After calling pk_from_json() and ck_from_json() to extract the pk and ck
 // components of a key, and if that succeeded, call check_key() to further
 // check that the key doesn't have any spurious components.
-static void check_key(const rjson::value& key, const schema_ptr& schema) {
+static std::optional<api_error> check_key(const rjson::value& key, const schema_ptr& schema) {
     if (key.MemberCount() != (schema->clustering_key_size() == 0 ? 1 : 2)) {
-        throw api_error("ValidationException", "Given key attribute not in schema");
+        return api_error("ValidationException", "Given key attribute not in schema");
     }
+    return {};
 }
 
-static mutation make_delete_item_mutation(const rjson::value& key, schema_ptr schema) {
+static std::variant<mutation, api_error> make_delete_item_mutation(const rjson::value& key, schema_ptr schema) {
     partition_key pk = pk_from_json(key, schema);
     clustering_key ck = ck_from_json(key, schema);
-    check_key(key, schema);
+    if (auto err = check_key(key, schema)) {
+        return *err;
+    }
     mutation m(schema, pk);
     auto& row = m.partition().clustered_row(*schema, ck);
     row.apply(tombstone(api::new_timestamp(), gc_clock::now()));
@@ -811,23 +920,38 @@ future<executor::request_return_type> executor::delete_item(client_state& client
     auto start_time = std::chrono::steady_clock::now();
     rjson::value update_info = rjson::parse(content);
 
-    schema_ptr schema = get_table(_proxy, update_info);
+    auto maybe_schema = get_table(_proxy, update_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
+
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
     if (rjson::find(update_info, "ConditionExpression")) {
-        throw api_error("ValidationException", "ConditionExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "ConditionExpression is not yet implemented in alternator"));
     }
     auto return_values = get_string_attribute(update_info, "ReturnValues", "NONE");
-    if (return_values != "NONE") {
+    if (std::holds_alternative<api_error>(return_values)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(return_values));
+    }
+    if (std::get<std::string>(return_values) != "NONE") {
         // FIXME: Need to support also the ALL_OLD option. See issue #5053.
-        throw api_error("ValidationException", format("Unsupported ReturnValues={} for DeleteItem operation", return_values));
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", format("Unsupported ReturnValues={} for DeleteItem operation",
+                std::get<std::string>(return_values))));
     }
     const bool has_expected = update_info.HasMember("Expected");
 
     const rjson::value& key = update_info["Key"];
 
-    mutation m = make_delete_item_mutation(key, schema);
-    check_key(key, schema);
+    auto m_ret = make_delete_item_mutation(key, schema);
+    if (std::holds_alternative<api_error>(m_ret)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(m_ret));
+    }
+    mutation m = std::get<mutation>(m_ret);
+    if (auto err = check_key(key, schema)) {
+        return make_ready_future<executor::request_return_type>(*err);
+    }
 
     return maybe_get_previous_item(_proxy, client_state, schema, key, has_expected, _stats).then(
             [this, schema, has_expected,  update_info = rjson::copy(update_info), m = std::move(m),
@@ -844,13 +968,15 @@ future<executor::request_return_type> executor::delete_item(client_state& client
 
 }
 
-static schema_ptr get_table_from_batch_request(const service::storage_proxy& proxy, const rjson::value::ConstMemberIterator& batch_request) {
+static std::variant<schema_ptr, api_error> get_table_from_batch_request(const service::storage_proxy& proxy, const rjson::value::ConstMemberIterator& batch_request) {
     std::string table_name = batch_request->name.GetString(); // JSON keys are always strings
-    validate_table_name(table_name);
+    if (auto err = validate_table_name(table_name)) {
+        return *err;
+    }
     try {
         return proxy.get_db().local().find_schema(executor::KEYSPACE_NAME, table_name);
     } catch(no_such_column_family&) {
-        throw api_error("ResourceNotFoundException", format("Requested resource not found: Table: {} not found", table_name));
+        return api_error("ResourceNotFoundException", format("Requested resource not found: Table: {} not found", table_name));
     }
 }
 
@@ -877,12 +1003,16 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
     mutations.reserve(request_items.MemberCount());
 
     for (auto it = request_items.MemberBegin(); it != request_items.MemberEnd(); ++it) {
-        schema_ptr schema = get_table_from_batch_request(_proxy, it);
+        auto maybe_schema = get_table_from_batch_request(_proxy, it);
+        if (std::holds_alternative<api_error>(maybe_schema)) {
+            return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+        }
+        schema_ptr schema = std::get<schema_ptr>(maybe_schema);
         tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
         std::unordered_set<primary_key, primary_key_hash, primary_key_equal> used_keys(1, primary_key_hash{schema}, primary_key_equal{schema});
         for (auto& request : it->value.GetArray()) {
             if (!request.IsObject() || request.MemberCount() != 1) {
-                throw api_error("ValidationException", format("Invalid BatchWriteItem request: {}", request));
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", format("Invalid BatchWriteItem request: {}", request)));
             }
             auto r = request.MemberBegin();
             const std::string r_name = r->name.GetString();
@@ -893,20 +1023,24 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
                 // make_item_mutation returns a mutation with a single clustering row
                 auto mut_key = std::make_pair(mutations.back().key(), mutations.back().partition().clustered_rows().begin()->key());
                 if (used_keys.count(mut_key) > 0) {
-                    throw api_error("ValidationException", "Provided list of item keys contains duplicates");
+                    return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Provided list of item keys contains duplicates"));
                 }
                 used_keys.insert(std::move(mut_key));
             } else if (r_name == "DeleteRequest") {
                 const rjson::value& key = (r->value)["Key"];
-                mutations.push_back(make_delete_item_mutation(key, schema));
+                auto m_ret = make_delete_item_mutation(key, schema);
+                if (std::holds_alternative<api_error>(m_ret)) {
+                    return make_ready_future<executor::request_return_type>(std::get<api_error>(m_ret));
+                }
+                mutations.push_back(std::get<mutation>(m_ret));
                 // make_delete_item_mutation returns a mutation with a single clustering row
                 auto mut_key = std::make_pair(mutations.back().key(), mutations.back().partition().clustered_rows().begin()->key());
                 if (used_keys.count(mut_key) > 0) {
-                    throw api_error("ValidationException", "Provided list of item keys contains duplicates");
+                    return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Provided list of item keys contains duplicates"));
                 }
                 used_keys.insert(std::move(mut_key));
             } else {
-                throw api_error("ValidationException", format("Unknown BatchWriteItem request type: {}", r_name));
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException", format("Unknown BatchWriteItem request type: {}", r_name)));
             }
         }
     }
@@ -930,20 +1064,20 @@ future<executor::request_return_type> executor::batch_write_item(client_state& c
 // function returns the column name;
 struct allow_key_columns_tag;
 using allow_key_columns = bool_class<allow_key_columns_tag>;
-static std::string resolve_update_path(const parsed::path& p,
+static std::variant<std::string, api_error> resolve_update_path(const parsed::path& p,
         const rjson::value& update_info,
         const schema_ptr& schema,
         std::unordered_set<std::string>& used_attribute_names,
         allow_key_columns allow_key_columns) {
     if (p.has_operators()) {
-        throw api_error("ValidationException", "UpdateItem does not yet support nested updates (FIXME)");
+        return api_error("ValidationException", "UpdateItem does not yet support nested updates (FIXME)");
     }
     auto column_name = p.root();
     if (column_name.size() > 0 && column_name[0] == '#') {
         const rjson::value& expression_attribute_names = rjson::get(update_info, "ExpressionAttributeNames");
         const rjson::value& value = rjson::get(expression_attribute_names, rjson::string_ref_type(column_name.c_str()));
         if (!value.IsString()) {
-            throw api_error("ValidationException",
+            return api_error("ValidationException",
                     format("ExpressionAttributeNames missing entry '{}' required by UpdateExpression",
                             column_name));
         }
@@ -952,7 +1086,7 @@ static std::string resolve_update_path(const parsed::path& p,
     }
     const column_definition* cdef = schema->get_column_definition(to_bytes(column_name));
     if (!allow_key_columns && cdef && cdef->is_primary_key()) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("UpdateItem cannot update key column {}", column_name));
     }
     return column_name;
@@ -960,19 +1094,20 @@ static std::string resolve_update_path(const parsed::path& p,
 
 // Fail the expression if it has unused attribute names or values. This is
 // how DynamoDB behaves, so we do too.
-static void verify_all_are_used(const rjson::value& req, const char* field,
+static std::optional<api_error> verify_all_are_used(const rjson::value& req, const char* field,
         const std::unordered_set<std::string>& used, const char* operation) {
     const rjson::value* attribute_names = rjson::find(req, rjson::string_ref_type(field));
     if (!attribute_names) {
-        return;
+        return {};
     }
     for (auto it = attribute_names->MemberBegin(); it != attribute_names->MemberEnd(); ++it) {
         if (!used.count(it->name.GetString())) {
-            throw api_error("ValidationException",
+            return api_error("ValidationException",
                 format("{} has spurious '{}', not used in {}",
                        field, it->name.GetString(), operation));
         }
     }
+    return {};
 }
 
 // Check if a given JSON object encodes a list (i.e., it is a {"L": [...]}
@@ -988,9 +1123,9 @@ static const rjson::value* unwrap_list(const rjson::value& v) {
     return &(it->value);
 }
 
-static std::string get_item_type_string(const rjson::value& v) {
+static std::variant<std::string, api_error> get_item_type_string(const rjson::value& v) {
     if (!v.IsObject() || v.MemberCount() != 1) {
-        throw api_error("ValidationException", format("Item has invalid format: {}", v));
+        return api_error("ValidationException", format("Item has invalid format: {}", v));
     }
     auto it = v.MemberBegin();
     return it->name.GetString();
@@ -999,11 +1134,11 @@ static std::string get_item_type_string(const rjson::value& v) {
 // Take two JSON-encoded list values (remember that a list value is
 // {"L": [...the actual list]}) and return the concatenation, again as
 // a list value.
-static rjson::value list_concatenate(const rjson::value& v1, const rjson::value& v2) {
+static std::variant<rjson::value, api_error> list_concatenate(const rjson::value& v1, const rjson::value& v2) {
     const rjson::value* list1 = unwrap_list(v1);
     const rjson::value* list2 = unwrap_list(v2);
     if (!list1 || !list2) {
-        throw api_error("ValidationException", "UpdateExpression: list_append() given a non-list");
+        return api_error("ValidationException", "UpdateExpression: list_append() given a non-list");
     }
     rjson::value cat = rjson::copy(*list1);
     for (const auto& a : list2->GetArray()) {
@@ -1016,14 +1151,14 @@ static rjson::value list_concatenate(const rjson::value& v1, const rjson::value&
 
 // Take two JSON-encoded set values (e.g. {"SS": [...the actual set]}) and return the sum of both sets,
 // again as a set value.
-static rjson::value set_sum(const rjson::value& v1, const rjson::value& v2) {
+static std::variant<rjson::value, api_error> set_sum(const rjson::value& v1, const rjson::value& v2) {
     auto [set1_type, set1] = unwrap_set(v1);
     auto [set2_type, set2] = unwrap_set(v2);
     if (set1_type != set2_type) {
-        throw api_error("ValidationException", format("Mismatched set types: {} and {}", set1_type, set2_type));
+        return api_error("ValidationException", format("Mismatched set types: {} and {}", set1_type, set2_type));
     }
     if (!set1 || !set2) {
-        throw api_error("ValidationException", "UpdateExpression: ADD operation for sets must be given sets as arguments");
+        return api_error("ValidationException", "UpdateExpression: ADD operation for sets must be given sets as arguments");
     }
     rjson::value sum = rjson::copy(*set1);
     std::set<rjson::value, rjson::single_value_comp> set1_raw;
@@ -1042,14 +1177,14 @@ static rjson::value set_sum(const rjson::value& v1, const rjson::value& v2) {
 
 // Take two JSON-encoded set values (e.g. {"SS": [...the actual list]}) and return the difference of s1 - s2,
 // again as a set value.
-static rjson::value set_diff(const rjson::value& v1, const rjson::value& v2) {
+static std::variant<rjson::value, api_error> set_diff(const rjson::value& v1, const rjson::value& v2) {
     auto [set1_type, set1] = unwrap_set(v1);
     auto [set2_type, set2] = unwrap_set(v2);
     if (set1_type != set2_type) {
-        throw api_error("ValidationException", format("Mismatched set types: {} and {}", set1_type, set2_type));
+        return api_error("ValidationException", format("Mismatched set types: {} and {}", set1_type, set2_type));
     }
     if (!set1 || !set2) {
-        throw api_error("ValidationException", "UpdateExpression: DELETE operation can only be performed on a set");
+        return api_error("ValidationException", "UpdateExpression: DELETE operation can only be performed on a set");
     }
     std::set<rjson::value, rjson::single_value_comp> set1_raw;
     for (auto it = set1->Begin(); it != set1->End(); ++it) {
@@ -1093,7 +1228,7 @@ template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 // Given a parsed::value, which can refer either to a constant value from
 // ExpressionAttributeValues, to the value of some attribute, or to a function
 // of other values, this function calculates the resulting value.
-static rjson::value calculate_value(const parsed::value& v,
+static std::variant<rjson::value, api_error> calculate_value(const parsed::value& v,
         const rjson::value& expression_attribute_values,
         std::unordered_set<std::string>& used_attribute_names,
         std::unordered_set<std::string>& used_attribute_values,
@@ -1101,45 +1236,63 @@ static rjson::value calculate_value(const parsed::value& v,
         schema_ptr schema,
         const std::unique_ptr<rjson::value>& previous_item) {
     return std::visit(overloaded {
-        [&] (const std::string& valref) -> rjson::value {
+        [&] (const std::string& valref) -> std::variant<rjson::value, api_error> {
             const rjson::value& value = rjson::get(expression_attribute_values, rjson::string_ref_type(valref.c_str()));
             if (value.IsNull()) {
-                throw api_error("ValidationException",
+                return api_error("ValidationException",
                         format("ExpressionAttributeValues missing entry '{}' required by UpdateExpression", valref));
             }
             used_attribute_values.emplace(std::move(valref));
             return rjson::copy(value);
         },
-        [&] (const parsed::value::function_call& f) -> rjson::value {
+        [&] (const parsed::value::function_call& f) -> std::variant<rjson::value, api_error> {
             if (f._function_name == "list_append") {
                 if (f._parameters.size() != 2) {
-                    throw api_error("ValidationException",
+                    return api_error("ValidationException",
                             format("UpdateExpression: list_append() accepts 2 parameters, got {}", f._parameters.size()));
                 }
-                rjson::value v1 = calculate_value(f._parameters[0], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                rjson::value v2 = calculate_value(f._parameters[1], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                return list_concatenate(v1, v2);
+                auto maybe_v1 = calculate_value(f._parameters[0], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                auto maybe_v2 = calculate_value(f._parameters[1], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                if (std::holds_alternative<api_error>(maybe_v1)) {
+                    return std::get<api_error>(maybe_v1);
+                }
+                if (std::holds_alternative<api_error>(maybe_v2)) {
+                    return std::get<api_error>(maybe_v2);
+                }
+                return list_concatenate(std::get<rjson::value>(std::move(maybe_v1)), std::get<rjson::value>(std::move(maybe_v2)));
             } else if (f._function_name == "if_not_exists") {
                 if (f._parameters.size() != 2) {
-                    throw api_error("ValidationException",
+                    return api_error("ValidationException",
                             format("UpdateExpression: if_not_exists() accepts 2 parameters, got {}", f._parameters.size()));
                 }
                 if (!std::holds_alternative<parsed::path>(f._parameters[0]._value)) {
-                    throw api_error("ValidationException", "UpdateExpression: if_not_exists() must include path as its first argument");
+                    return api_error("ValidationException", "UpdateExpression: if_not_exists() must include path as its first argument");
                 }
-                rjson::value v1 = calculate_value(f._parameters[0], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                rjson::value v2 = calculate_value(f._parameters[1], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                auto maybe_v1 = calculate_value(f._parameters[0], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                auto maybe_v2 = calculate_value(f._parameters[1], expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                if (std::holds_alternative<api_error>(maybe_v1)) {
+                    return std::get<api_error>(maybe_v1);
+                }
+                if (std::holds_alternative<api_error>(maybe_v2)) {
+                    return std::get<api_error>(maybe_v2);
+                }
+                auto v1 = std::get<rjson::value>(std::move(maybe_v1));
+                auto v2 = std::get<rjson::value>(std::move(maybe_v2));
                 return v1.IsNull() ? std::move(v2) : std::move(v1);
             } else {
-                throw api_error("ValidationException",
+                return api_error("ValidationException",
                         format("UpdateExpression: unknown function '{}' called.", f._function_name));
             }
         },
-        [&] (const parsed::path& p) -> rjson::value {
+        [&] (const parsed::path& p) -> std::variant<rjson::value, api_error> {
             if (!previous_item || previous_item->IsNull() || previous_item->ObjectEmpty()) {
                 return rjson::null_value();
             }
-            std::string update_path = resolve_update_path(p, update_info, schema, used_attribute_names, allow_key_columns::yes);
+            auto maybe_update_path = resolve_update_path(p, update_info, schema, used_attribute_names, allow_key_columns::yes);
+            if (std::holds_alternative<api_error>(maybe_update_path)) {
+                return std::get<api_error>(maybe_update_path);
+            }
+            auto update_path = std::get<std::string>(std::move(maybe_update_path));
             rjson::value* previous_value = rjson::find((*previous_item)["Item"], rjson::string_ref_type(update_path.c_str()));
             return previous_value ? rjson::copy(*previous_value) : rjson::null_value();
         }
@@ -1148,7 +1301,7 @@ static rjson::value calculate_value(const parsed::value& v,
 
 // Same as calculate_value() above, except takes a set_rhs, which may be
 // either a single value, or v1+v2 or v1-v2.
-static rjson::value calculate_value(const parsed::set_rhs& rhs,
+static std::variant<rjson::value, api_error> calculate_value(const parsed::set_rhs& rhs,
         const rjson::value& expression_attribute_values,
         std::unordered_set<std::string>& used_attribute_names,
         std::unordered_set<std::string>& used_attribute_values,
@@ -1159,36 +1312,48 @@ static rjson::value calculate_value(const parsed::set_rhs& rhs,
     case 'v':
         return calculate_value(rhs._v1, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
     case '+': {
-        rjson::value v1 = calculate_value(rhs._v1, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-        rjson::value v2 = calculate_value(rhs._v2, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-        return number_add(v1, v2);
+        auto maybe_v1 = calculate_value(rhs._v1, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+        auto maybe_v2 = calculate_value(rhs._v2, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+        if (std::holds_alternative<api_error>(maybe_v1)) {
+            return std::get<api_error>(maybe_v1);
+        }
+        if (std::holds_alternative<api_error>(maybe_v2)) {
+            return std::get<api_error>(maybe_v2);
+        }
+        return number_add(std::get<rjson::value>(std::move(maybe_v1)), std::get<rjson::value>(std::move(maybe_v2)));
     }
     case '-': {
-        rjson::value v1 = calculate_value(rhs._v1, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-        rjson::value v2 = calculate_value(rhs._v2, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-        return number_subtract(v1, v2);
+        auto maybe_v1 = calculate_value(rhs._v1, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+        auto maybe_v2 = calculate_value(rhs._v2, expression_attribute_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+        if (std::holds_alternative<api_error>(maybe_v1)) {
+            return std::get<api_error>(maybe_v1);
+        }
+        if (std::holds_alternative<api_error>(maybe_v2)) {
+            return std::get<api_error>(maybe_v2);
+        }
+        return number_subtract(std::get<rjson::value>(std::move(maybe_v1)), std::get<rjson::value>(std::move(maybe_v2)));
     }
     }
     // Can't happen
     return rjson::null_value();
 }
 
-static std::string resolve_projection_path(const parsed::path& p,
+static std::variant<std::string, api_error> resolve_projection_path(const parsed::path& p,
         const rjson::value* expression_attribute_names,
         std::unordered_set<std::string>& used_attribute_names,
         std::unordered_set<std::string>& seen_column_names) {
     if (p.has_operators()) {
         // FIXME:
-        throw api_error("ValidationException", "Non-toplevel attributes in ProjectionExpression not yet implemented (FIXME)");
+        return api_error("ValidationException", "Non-toplevel attributes in ProjectionExpression not yet implemented (FIXME)");
     }
     auto column_name = p.root();
     if (column_name.size() > 0 && column_name[0] == '#') {
         if (!expression_attribute_names) {
-            throw api_error("ValidationException", "ExpressionAttributeNames parameter not found");
+            return api_error("ValidationException", "ExpressionAttributeNames parameter not found");
         }
         const rjson::value& value = rjson::get(*expression_attribute_names, rjson::string_ref_type(column_name.c_str()));
         if (!value.IsString()) {
-            throw api_error("ValidationException",
+            return api_error("ValidationException",
                 format("ExpressionAttributeNames missing entry '{}' required by ProjectionExpression", column_name));
         }
         used_attribute_names.emplace(std::move(column_name));
@@ -1196,7 +1361,7 @@ static std::string resolve_projection_path(const parsed::path& p,
     }
     // FIXME: this check will need to change when we support non-toplevel attributes
     if (!seen_column_names.insert(column_name).second) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("Invalid ProjectionExpression: two document paths overlap with each other: {} and {}.",
                         column_name, column_name));
     }
@@ -1213,11 +1378,11 @@ static std::string resolve_projection_path(const parsed::path& p,
 // the parts of the JSON attributes that were chosen in the paths'
 // operators. Because we don't have such filtering yet (FIXME), we fail here
 // if the requested paths are anything but top-level attributes.
-std::unordered_set<std::string> calculate_attrs_to_get(const rjson::value& req) {
+std::variant<std::unordered_set<std::string>, api_error> calculate_attrs_to_get(const rjson::value& req) {
     const bool has_attributes_to_get = req.HasMember("AttributesToGet");
     const bool has_projection_expression = req.HasMember("ProjectionExpression");
     if (has_attributes_to_get && has_projection_expression) {
-        throw api_error("ValidationException",
+        return api_error("ValidationException",
                 format("GetItem does not allow both ProjectionExpression and AttributesToGet to be given together"));
     }
     if (has_attributes_to_get) {
@@ -1234,15 +1399,21 @@ std::unordered_set<std::string> calculate_attrs_to_get(const rjson::value& req) 
         try {
             paths_to_get = parse_projection_expression(projection_expression.GetString());
         } catch(expressions_syntax_error& e) {
-            throw api_error("ValidationException", e.what());
+            return api_error("ValidationException", e.what());
         }
         std::unordered_set<std::string> used_attribute_names;
         std::unordered_set<std::string> seen_column_names;
-        auto ret = boost::copy_range<std::unordered_set<std::string>>(paths_to_get |
-            boost::adaptors::transformed([&] (const parsed::path& p) {
-                return resolve_projection_path(p, expression_attribute_names, used_attribute_names, seen_column_names);
-            }));
-        verify_all_are_used(req, "ExpressionAttributeNames", used_attribute_names, "ProjectionExpression");
+        std::unordered_set<std::string> ret;
+        for (const auto& path : paths_to_get) {
+            auto maybe_resolved_projection_path = resolve_projection_path(path, expression_attribute_names, used_attribute_names, seen_column_names);
+            if (std::holds_alternative<api_error>(maybe_resolved_projection_path)) {
+                return std::get<api_error>(maybe_resolved_projection_path);
+            }
+            ret.insert(std::get<std::string>(std::move(maybe_resolved_projection_path)));
+        }
+        if (auto err = verify_all_are_used(req, "ExpressionAttributeNames", used_attribute_names, "ProjectionExpression")) {
+            return *err;
+        }
         return ret;
     }
     // An empty set asks to read everything
@@ -1415,25 +1586,36 @@ future<executor::request_return_type> executor::update_item(client_state& client
     auto start_time = std::chrono::steady_clock::now();
     rjson::value update_info = rjson::parse(content);
     elogger.trace("update_item {}", update_info);
-    schema_ptr schema = get_table(_proxy, update_info);
+    auto maybe_schema = get_table(_proxy, update_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
+
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
     if (rjson::find(update_info, "ConditionExpression")) {
-        throw api_error("ValidationException", "ConditionExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "ConditionExpression is not yet implemented in alternator"));
     }
     auto return_values = get_string_attribute(update_info, "ReturnValues", "NONE");
-    if (return_values != "NONE") {
+    if (std::holds_alternative<api_error>(return_values)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(return_values));
+    }
+    if (std::get<std::string>(return_values) != "NONE") {
         // FIXME: Need to support also ALL_OLD, UPDATED_OLD, ALL_NEW and UPDATED_NEW options. See issue #5053.
-        throw api_error("ValidationException", format("Unsupported ReturnValues={} for UpdateItem operation", return_values));
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", format("Unsupported ReturnValues={} for UpdateItem operation",
+                std::get<std::string>(return_values))));
     }
 
     if (!update_info.HasMember("Key")) {
-        throw api_error("ValidationException", "UpdateItem requires a Key parameter");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "UpdateItem requires a Key parameter"));
     }
     const rjson::value& key = update_info["Key"];
     partition_key pk = pk_from_json(key, schema);
     clustering_key ck = ck_from_json(key, schema);
-    check_key(key, schema);
+    if (auto err = check_key(key, schema)) {
+        return make_ready_future<executor::request_return_type>(*err);
+    }
 
     mutation m(schema, pk);
     attribute_collector attrs_collector;
@@ -1445,12 +1627,12 @@ future<executor::request_return_type> executor::update_item(client_state& client
     const bool has_attribute_updates = update_info.HasMember("AttributeUpdates");
     const bool has_expected = update_info.HasMember("Expected");
     if (has_update_expression && has_attribute_updates) {
-        throw api_error("ValidationException",
-                format("UpdateItem does not allow both AttributeUpdates and UpdateExpression to be given together"));
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                format("UpdateItem does not allow both AttributeUpdates and UpdateExpression to be given together")));
     }
     if (has_update_expression && has_expected) {
-        throw api_error("ValidationException",
-                format("UpdateItem does not allow both old-style Expected and new-style UpdateExpression to be given together"));
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                format("UpdateItem does not allow both old-style Expected and new-style UpdateExpression to be given together")));
     }
 
     rjson::value attribute_updates = rjson::empty_object();
@@ -1460,10 +1642,10 @@ future<executor::request_return_type> executor::update_item(client_state& client
         try {
             expression = parse_update_expression(update_expression.GetString());
         } catch(expressions_syntax_error& e) {
-            throw api_error("ValidationException", e.what());
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", e.what()));
         }
         if (expression.empty()) {
-            throw api_error("ValidationException", "Empty expression in UpdateExpression is not allowed");
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Empty expression in UpdateExpression is not allowed"));
         }
     } else if (has_attribute_updates) {
         attribute_updates = update_info["AttributeUpdates"];
@@ -1503,71 +1685,121 @@ future<executor::request_return_type> executor::update_item(client_state& client
             const rjson::value* attr_values_raw = rjson::find(update_info, "ExpressionAttributeValues");
             const rjson::value& attr_values = attr_values_raw ? *attr_values_raw : empty_attribute_values;
             for (auto& action : expression.actions()) {
-                std::string column_name = resolve_update_path(action._path, update_info, schema, used_attribute_names, allow_key_columns::no);
+                auto maybe_column_name = resolve_update_path(action._path, update_info, schema, used_attribute_names, allow_key_columns::no);
+                if (std::holds_alternative<api_error>(maybe_column_name)) {
+                    return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_column_name));
+                }
+                auto column_name = std::get<std::string>(std::move(maybe_column_name));
                 // DynamoDB forbids multiple updates in the same expression to
                 // modify overlapping document paths. Updates of one expression
                 // have the same timestamp, so it's unclear which would "win".
                 // FIXME: currently, without full support for document paths,
                 // we only check if the paths' roots are the same.
                 if (!seen_column_names.insert(column_name).second) {
-                    throw api_error("ValidationException",
+                    return make_ready_future<executor::request_return_type>(api_error("ValidationException",
                             format("Invalid UpdateExpression: two document paths overlap with each other: {} and {}.",
-                                    column_name, column_name));
+                                    column_name, column_name)));
                 }
-                std::visit(overloaded {
-                    [&] (const parsed::update_expression::action::set& a) {
+                auto err = std::visit(overloaded {
+                    [&] (const parsed::update_expression::action::set& a) -> std::optional<api_error> {
                         auto value = calculate_value(a._rhs, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                        do_update(to_bytes(column_name), value);
+                        if (std::holds_alternative<api_error>(value)) {
+                            return std::get<api_error>(value);
+                        }
+                        do_update(to_bytes(column_name), std::get<rjson::value>(value));
+                        return {};
                     },
-                    [&] (const parsed::update_expression::action::remove& a) {
+                    [&] (const parsed::update_expression::action::remove& a) -> std::optional<api_error> {
                         do_delete(to_bytes(column_name));
+                        return {};
                     },
-                    [&] (const parsed::update_expression::action::add& a) {
+                    [&] (const parsed::update_expression::action::add& a) -> std::optional<api_error> {
                         parsed::value base;
                         parsed::value addition;
                         base.set_path(action._path);
                         addition.set_valref(a._valref);
-                        rjson::value v1 = calculate_value(base, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                        rjson::value v2 = calculate_value(addition, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                        rjson::value result;
-                        std::string v1_type = get_item_type_string(v1);
-                        if (v1_type == "N") {
-                            if (get_item_type_string(v2) != "N") {
-                                throw api_error("ValidationException", format("Incorrect operand type for operator or function. Expected {}: {}", v1_type, rjson::print(v2)));
-                            }
-                            result = number_add(v1, v2);
-                        } else if (v1_type == "SS" || v1_type == "NS" || v1_type == "BS") {
-                            if (get_item_type_string(v2) != v1_type) {
-                                throw api_error("ValidationException", format("Incorrect operand type for operator or function. Expected {}: {}", v1_type, rjson::print(v2)));
-                            }
-                            result = set_sum(v1, v2);
-                        } else {
-                            throw api_error("ValidationException", format("An operand in the update expression has an incorrect data type: {}", v1));
+                        auto maybe_v1 = calculate_value(base, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                        auto maybe_v2 = calculate_value(addition, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                        if (std::holds_alternative<api_error>(maybe_v1)) {
+                            return std::get<api_error>(maybe_v1);
                         }
-                        do_update(to_bytes(column_name), result);
+                        if (std::holds_alternative<api_error>(maybe_v2)) {
+                            return std::get<api_error>(maybe_v2);
+                        }
+                        auto v1 = std::get<rjson::value>(std::move(maybe_v1));
+                        auto v2 = std::get<rjson::value>(std::move(maybe_v2));
+                        std::variant<rjson::value, api_error> maybe_result;
+                        auto maybe_v1_type = get_item_type_string(v1);
+                        if (std::holds_alternative<api_error>(maybe_v1_type)) {
+                            return std::get<api_error>(maybe_v1_type);
+                        }
+                        auto v1_type = std::get<std::string>(maybe_v1_type);
+                        if (v1_type == "N") {
+                            auto maybe_v2_type = get_item_type_string(v2);
+                            if (std::holds_alternative<api_error>(maybe_v2_type)) {
+                                return std::get<api_error>(maybe_v2_type);
+                            }
+                            if (std::get<std::string>(maybe_v2_type) != "N") {
+                                return api_error("ValidationException", format("Incorrect operand type for operator or function. Expected {}: {}", v1_type, rjson::print(v2)));
+                            }
+                            maybe_result = number_add(v1, v2);
+                        } else if (v1_type == "SS" || v1_type == "NS" || v1_type == "BS") {
+                            auto maybe_v2_type = get_item_type_string(v2);
+                            if (std::holds_alternative<api_error>(maybe_v2_type)) {
+                                return std::get<api_error>(maybe_v2_type);
+                            }
+                            if (std::get<std::string>(maybe_v2_type) != v1_type) {
+                                return api_error("ValidationException", format("Incorrect operand type for operator or function. Expected {}: {}", v1_type, rjson::print(v2)));
+                            }
+                            maybe_result = set_sum(v1, v2);
+                        } else {
+                            return api_error("ValidationException", format("An operand in the update expression has an incorrect data type: {}", v1));
+                        }
+                        if (std::holds_alternative<api_error>(maybe_result)) {
+                            return std::get<api_error>(maybe_result);
+                        }
+                        do_update(to_bytes(column_name), std::get<rjson::value>(maybe_result));
+                        return {};
                     },
-                    [&] (const parsed::update_expression::action::del& a) {
+                    [&] (const parsed::update_expression::action::del& a) -> std::optional<api_error> {
                         parsed::value base;
                         parsed::value subset;
                         base.set_path(action._path);
                         subset.set_valref(a._valref);
-                        rjson::value v1 = calculate_value(base, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                        rjson::value v2 = calculate_value(subset, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
-                        rjson::value result  = set_diff(v1, v2);
-                        do_update(to_bytes(column_name), result);
+                        auto maybe_v1 = calculate_value(base, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                        auto maybe_v2 = calculate_value(subset, attr_values, used_attribute_names, used_attribute_values, update_info, schema, previous_item);
+                        if (std::holds_alternative<api_error>(maybe_v1)) {
+                            return std::get<api_error>(maybe_v1);
+                        }
+                        if (std::holds_alternative<api_error>(maybe_v2)) {
+                            return std::get<api_error>(maybe_v2);
+                        }
+                        auto maybe_result  = set_diff(std::get<rjson::value>(std::move(maybe_v1)), std::get<rjson::value>(std::move(maybe_v2)));
+                        if (std::holds_alternative<api_error>(maybe_result)) {
+                            return std::get<api_error>(maybe_result);
+                        }
+                        do_update(to_bytes(column_name), std::get<rjson::value>(maybe_result));
+                        return {};
                     }
                 }, action._action);
+                if (err) {
+                    return make_ready_future<executor::request_return_type>(*err);
+                }
             }
-            verify_all_are_used(update_info, "ExpressionAttributeNames", used_attribute_names, "UpdateExpression");
-            verify_all_are_used(update_info, "ExpressionAttributeValues", used_attribute_values, "UpdateExpression");
+            if (auto err = verify_all_are_used(update_info, "ExpressionAttributeNames", used_attribute_names, "UpdateExpression")) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
+            if (auto err = verify_all_are_used(update_info, "ExpressionAttributeValues", used_attribute_values, "UpdateExpression")) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
         }
         for (auto it = attribute_updates.MemberBegin(); it != attribute_updates.MemberEnd(); ++it) {
             // Note that it.key() is the name of the column, *it is the operation
             bytes column_name = to_bytes(it->name.GetString());
             const column_definition* cdef = schema->get_column_definition(column_name);
             if (cdef && cdef->is_primary_key()) {
-                throw api_error("ValidationException",
-                        format("UpdateItem cannot update key column {}", it->name.GetString()));
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                        format("UpdateItem cannot update key column {}", it->name.GetString())));
             }
             std::string action = (it->value)["Action"].GetString();
             if (action == "DELETE") {
@@ -1576,21 +1808,21 @@ future<executor::request_return_type> executor::update_item(client_state& client
                 // we need to verify the old type and/or value is same as
                 // specified before deleting... We don't do this yet.
                 if (it->value.HasMember("Value")) {
-                    throw api_error("ValidationException",
-                            format("UpdateItem DELETE with checking old value not yet supported"));
+                    return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                            format("UpdateItem DELETE with checking old value not yet supported")));
                 }
                 do_delete(std::move(column_name));
             } else if (action == "PUT") {
                 const rjson::value& value = (it->value)["Value"];
                 if (value.MemberCount() != 1) {
-                    throw api_error("ValidationException",
-                            format("Value field in AttributeUpdates must have just one item", it->name.GetString()));
+                    return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                            format("Value field in AttributeUpdates must have just one item", it->name.GetString())));
                 }
                 do_update(std::move(column_name), value);
             } else {
                 // FIXME: need to support "ADD" as well.
-                throw api_error("ValidationException",
-                    format("Unknown Action value '{}' in AttributeUpdates", action));
+                return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                    format("Unknown Action value '{}' in AttributeUpdates", action)));
             }
         }
         if (!attrs_collector.empty()) {
@@ -1617,14 +1849,14 @@ future<executor::request_return_type> executor::update_item(client_state& client
 // field is absense, we default to eventually consistent reads.
 // In Scylla, eventually-consistent reads are implemented as consistency
 // level LOCAL_ONE, and strongly-consistent reads as LOCAL_QUORUM.
-static db::consistency_level get_read_consistency(const rjson::value& request) {
+static std::variant<db::consistency_level, api_error> get_read_consistency(const rjson::value& request) {
     const rjson::value* consistent_read_value = rjson::find(request, "ConsistentRead");
     bool consistent_read = false;
     if (consistent_read_value && !consistent_read_value->IsNull()) {
         if (consistent_read_value->IsBool()) {
             consistent_read = consistent_read_value->GetBool();
         } else {
-            throw api_error("ValidationException", "ConsistentRead flag must be a boolean");
+            return api_error("ValidationException", "ConsistentRead flag must be a boolean");
         }
     }
     return consistent_read ? db::consistency_level::LOCAL_QUORUM : db::consistency_level::LOCAL_ONE;
@@ -1636,12 +1868,21 @@ future<executor::request_return_type> executor::get_item(client_state& client_st
     rjson::value table_info = rjson::parse(content);
     elogger.trace("Getting item {}", table_info);
 
-    schema_ptr schema = get_table(_proxy, table_info);
+    auto maybe_schema = get_table(_proxy, table_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
+
 
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
     rjson::value& query_key = table_info["Key"];
-    db::consistency_level cl = get_read_consistency(table_info);
+    auto maybe_cl = get_read_consistency(table_info);
+    if (std::holds_alternative<api_error>(maybe_cl)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_cl));
+    }
+    db::consistency_level cl = std::get<db::consistency_level>(maybe_cl);
 
     partition_key pk = pk_from_json(query_key, schema);
     dht::partition_range_vector partition_ranges{dht::partition_range(dht::global_partitioner().decorate_key(*schema, pk))};
@@ -1653,7 +1894,9 @@ future<executor::request_return_type> executor::get_item(client_state& client_st
         clustering_key ck = ck_from_json(query_key, schema);
         bounds.push_back(query::clustering_range::make_singular(std::move(ck)));
     }
-    check_key(query_key, schema);
+    if (auto err = check_key(query_key, schema)) {
+        return make_ready_future<executor::request_return_type>(*err);
+    }
 
     //TODO(sarna): It would be better to fetch only some attributes of the map, not all
     auto regular_columns = boost::copy_range<query::column_id_vector>(
@@ -1664,7 +1907,11 @@ future<executor::request_return_type> executor::get_item(client_state& client_st
     auto partition_slice = query::partition_slice(std::move(bounds), {}, std::move(regular_columns), selection->get_query_options());
     auto command = ::make_lw_shared<query::read_command>(schema->id(), schema->version(), partition_slice, query::max_partitions);
 
-    auto attrs_to_get = calculate_attrs_to_get(table_info);
+    auto maybe_attrs_to_get = calculate_attrs_to_get(table_info);
+    if (std::holds_alternative<api_error>(maybe_attrs_to_get)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_attrs_to_get));
+    }
+    auto attrs_to_get = std::get<std::unordered_set<std::string>>(std::move(maybe_attrs_to_get));
 
     return _proxy.query(schema, std::move(command), std::move(partition_ranges), cl, service::storage_proxy::coordinator_query_options(default_timeout(), empty_service_permit(), client_state)).then(
             [this, schema, partition_slice = std::move(partition_slice), selection = std::move(selection), attrs_to_get = std::move(attrs_to_get), start_time = std::move(start_time)] (service::storage_proxy::coordinator_query_result qr) mutable {
@@ -1700,14 +1947,28 @@ future<executor::request_return_type> executor::batch_get_item(client_state& cli
 
     for (auto it = request_items.MemberBegin(); it != request_items.MemberEnd(); ++it) {
         table_requests rs;
-        rs.schema = get_table_from_batch_request(_proxy, it);
+        auto maybe_schema = get_table_from_batch_request(_proxy, it);
+        if (std::holds_alternative<api_error>(maybe_schema)) {
+            return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+        }
+        rs.schema = std::get<schema_ptr>(maybe_schema);
         tracing::add_table_name(client_state.get_trace_state(), KEYSPACE_NAME, rs.schema->cf_name());
-        rs.cl = get_read_consistency(it->value);
-        rs.attrs_to_get = calculate_attrs_to_get(it->value);
+        auto maybe_cl = get_read_consistency(it->value);
+        if (std::holds_alternative<api_error>(maybe_cl)) {
+            return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_cl));
+        }
+        rs.cl = std::get<db::consistency_level>(maybe_cl);
+        auto maybe_attrs_to_get = calculate_attrs_to_get(it->value);
+        if (std::holds_alternative<api_error>(maybe_attrs_to_get)) {
+            return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_attrs_to_get));
+        }
+        rs.attrs_to_get = std::get<std::unordered_set<std::string>>(std::move(maybe_attrs_to_get));
         auto& keys = (it->value)["Keys"];
         for (const rjson::value& key : keys.GetArray()) {
             rs.requests.push_back({pk_from_json(key, rs.schema), ck_from_json(key, rs.schema)});
-            check_key(key, rs.schema);
+            if (auto err = check_key(key, rs.schema)) {
+                return make_ready_future<executor::request_return_type>(*err);
+            }
         }
         requests.emplace_back(std::move(rs));
     }
@@ -1924,27 +2185,47 @@ future<executor::request_return_type> executor::scan(client_state& client_state,
     rjson::value request_info = rjson::parse(content);
     elogger.trace("Scanning {}", request_info);
 
-    schema_ptr schema = get_table_or_view(_proxy, request_info);
+    auto maybe_schema = get_table_or_view(_proxy, request_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
 
     if (rjson::find(request_info, "FilterExpression")) {
-        throw api_error("ValidationException", "FilterExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "FilterExpression is not yet implemented in alternator"));
     }
-    if (get_int_attribute(request_info, "Segment") || get_int_attribute(request_info, "TotalSegments")) {
+    auto segment = get_int_attribute(request_info, "Segment");
+    auto total_segments = get_int_attribute(request_info, "TotalSegments");
+    if (std::holds_alternative<api_error>(segment)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(segment));
+    }
+    if (std::holds_alternative<api_error>(total_segments)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(total_segments));
+    }
+    if (std::get<std::optional<int>>(segment) || std::get<std::optional<int>>(total_segments)) {
         // FIXME: need to support parallel scan. See issue #5059.
-        throw api_error("ValidationException", "Scan Segment/TotalSegments is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Scan Segment/TotalSegments is not yet implemented in alternator"));
     }
 
     rjson::value* exclusive_start_key = rjson::find(request_info, "ExclusiveStartKey");
     //FIXME(sarna): ScanFilter is deprecated in favor of FilterExpression
     rjson::value* scan_filter = rjson::find(request_info, "ScanFilter");
-    db::consistency_level cl = get_read_consistency(request_info);
+    auto maybe_cl = get_read_consistency(request_info);
+    if (std::holds_alternative<api_error>(maybe_cl)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_cl));
+    }
+    db::consistency_level cl = std::get<db::consistency_level>(maybe_cl);
     rjson::value* limit_json = rjson::find(request_info, "Limit");
     uint32_t limit = limit_json ? limit_json->GetUint64() : query::max_partitions;
     if (limit <= 0) {
-        throw api_error("ValidationException", "Limit must be greater than 0");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Limit must be greater than 0"));
     }
 
-    auto attrs_to_get = calculate_attrs_to_get(request_info);
+    auto maybe_attrs_to_get = calculate_attrs_to_get(request_info);
+    if (std::holds_alternative<api_error>(maybe_attrs_to_get)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_attrs_to_get));
+    }
+    auto attrs_to_get = std::get<std::unordered_set<std::string>>(std::move(maybe_attrs_to_get));
 
     dht::partition_range_vector partition_ranges{dht::partition_range::make_open_ended_both_sides()};
     std::vector<query::clustering_range> ck_bounds{query::clustering_range::make_open_ended_both_sides()};
@@ -1959,15 +2240,15 @@ future<executor::request_return_type> executor::scan(client_state& client_state,
     return do_query(schema, exclusive_start_key, std::move(partition_ranges), std::move(ck_bounds), std::move(attrs_to_get), limit, cl, std::move(filtering_restrictions), client_state, _stats.cql_stats);
 }
 
-static dht::partition_range calculate_pk_bound(schema_ptr schema, const column_definition& pk_cdef, comparison_operator_type op, const rjson::value& attrs) {
+static std::variant<dht::partition_range, api_error> calculate_pk_bound(schema_ptr schema, const column_definition& pk_cdef, comparison_operator_type op, const rjson::value& attrs) {
     if (attrs.Size() != 1) {
-        throw api_error("ValidationException", format("Only a single attribute is allowed for a hash key restriction: {}", attrs));
+        return api_error("ValidationException", format("Only a single attribute is allowed for a hash key restriction: {}", attrs));
     }
     bytes raw_value = pk_cdef.type->from_string(attrs[0][type_to_string(pk_cdef.type)].GetString());
     partition_key pk = partition_key::from_singular(*schema, pk_cdef.type->deserialize(raw_value));
     auto decorated_key = dht::global_partitioner().decorate_key(*schema, pk);
     if (op != comparison_operator_type::EQ) {
-        throw api_error("ValidationException", format("Hash key {} can only be restricted with equality operator (EQ)"));
+        return api_error("ValidationException", format("Hash key {} can only be restricted with equality operator (EQ)"));
     }
     return dht::partition_range(decorated_key);
 }
@@ -1983,10 +2264,10 @@ static query::clustering_range get_clustering_range_for_begins_with(bytes&& targ
     return query::clustering_range::make_starting_with(query::clustering_range::bound(ck));
 }
 
-static query::clustering_range calculate_ck_bound(schema_ptr schema, const column_definition& ck_cdef, comparison_operator_type op, const rjson::value& attrs) {
+static std::variant<query::clustering_range, api_error> calculate_ck_bound(schema_ptr schema, const column_definition& ck_cdef, comparison_operator_type op, const rjson::value& attrs) {
     const size_t expected_attrs_size = (op == comparison_operator_type::BETWEEN) ? 2 : 1;
     if (attrs.Size() != expected_attrs_size) {
-        throw api_error("ValidationException", format("{} arguments expected for a sort key restriction: {}", expected_attrs_size, attrs));
+        return api_error("ValidationException", format("{} arguments expected for a sort key restriction: {}", expected_attrs_size, attrs));
     }
     bytes raw_value = ck_cdef.type->from_string(attrs[0][type_to_string(ck_cdef.type)].GetString());
     clustering_key ck = clustering_key::from_single_value(*schema, raw_value);
@@ -2013,19 +2294,19 @@ static query::clustering_range calculate_ck_bound(schema_ptr schema, const colum
         // NOTICE(sarna): A range starting with given prefix and ending (non-inclusively) with a string "incremented" by a single
         // character at the end. Throws for NUMBER instances.
         if (!ck_cdef.type->is_compatible_with(*utf8_type)) {
-            throw api_error("ValidationException", format("BEGINS_WITH operator cannot be applied to type {}", type_to_string(ck_cdef.type)));
+            return api_error("ValidationException", format("BEGINS_WITH operator cannot be applied to type {}", type_to_string(ck_cdef.type)));
         }
         std::string raw_upper_limit_str = attrs[0][type_to_string(ck_cdef.type)].GetString();
         bytes raw_upper_limit = ck_cdef.type->from_string(raw_upper_limit_str);
         return get_clustering_range_for_begins_with(std::move(raw_upper_limit), ck, schema, ck_cdef.type);
     }
     default:
-        throw api_error("ValidationException", format("Unknown primary key bound passed: {}", int(op)));
+        return api_error("ValidationException", format("Unknown primary key bound passed: {}", int(op)));
     }
 }
 
 // Calculates primary key bounds from the list of conditions
-static std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>
+static std::variant<std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>, api_error>
 calculate_bounds(schema_ptr schema, const rjson::value& conditions) {
     dht::partition_range_vector partition_ranges;
     std::vector<query::clustering_range> ck_bounds;
@@ -2043,32 +2324,40 @@ calculate_bounds(schema_ptr schema, const rjson::value& conditions) {
         const column_definition* ck_cdef = schema->clustering_key_size() > 0 ? &schema->clustering_key_columns().front() : nullptr;
         if (sstring(key) == pk_cdef.name_as_text()) {
             if (!partition_ranges.empty()) {
-                throw api_error("ValidationException", "Currently only a single restriction per key is allowed");
+                return api_error("ValidationException", "Currently only a single restriction per key is allowed");
             }
-            partition_ranges.push_back(calculate_pk_bound(schema, pk_cdef, op, attr_list));
+            auto maybe_pk_bound = calculate_pk_bound(schema, pk_cdef, op, attr_list);
+            if (std::holds_alternative<api_error>(maybe_pk_bound)) {
+                return std::get<api_error>(maybe_pk_bound);
+            }
+            partition_ranges.push_back(std::get<dht::partition_range>(maybe_pk_bound));
         }
         if (ck_cdef && sstring(key) == ck_cdef->name_as_text()) {
             if (!ck_bounds.empty()) {
-                throw api_error("ValidationException", "Currently only a single restriction per key is allowed");
+                return api_error("ValidationException", "Currently only a single restriction per key is allowed");
             }
-            ck_bounds.push_back(calculate_ck_bound(schema, *ck_cdef, op, attr_list));
+            auto maybe_ck_bound = calculate_ck_bound(schema, *ck_cdef, op, attr_list);
+            if (std::holds_alternative<api_error>(maybe_ck_bound)) {
+                return std::get<api_error>(maybe_ck_bound);
+            }
+            ck_bounds.push_back(std::get<query::clustering_range>(maybe_ck_bound));
         }
     }
 
     // Validate that a query's conditions must be on the hash key, and
     // optionally also on the sort key if it exists.
     if (partition_ranges.empty()) {
-        throw api_error("ValidationException", format("Query missing condition on hash key '{}'", schema->partition_key_columns().front().name_as_text()));
+        return api_error("ValidationException", format("Query missing condition on hash key '{}'", schema->partition_key_columns().front().name_as_text()));
     }
     if (schema->clustering_key_size() == 0) {
         if (conditions.MemberCount() != 1) {
-            throw api_error("ValidationException", "Only one condition allowed in table with only hash key");
+            return api_error("ValidationException", "Only one condition allowed in table with only hash key");
         }
     } else {
         if (conditions.MemberCount() == 2 && ck_bounds.empty()) {
-            throw api_error("ValidationException", format("Query missing condition on sort key '{}'", schema->clustering_key_columns().front().name_as_text()));
+            return api_error("ValidationException", format("Query missing condition on sort key '{}'", schema->clustering_key_columns().front().name_as_text()));
         } else if (conditions.MemberCount() > 2) {
-            throw api_error("ValidationException", "Only one or two conditions allowed in table with hash key and sort key");
+            return api_error("ValidationException", "Only one or two conditions allowed in table with hash key and sort key");
         }
     }
 
@@ -2076,7 +2365,7 @@ calculate_bounds(schema_ptr schema, const rjson::value& conditions) {
         ck_bounds.push_back(query::clustering_range::make_open_ended_both_sides());
     }
 
-    return {std::move(partition_ranges), std::move(ck_bounds)};
+    return std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>{std::move(partition_ranges), std::move(ck_bounds)};
 }
 
 future<executor::request_return_type> executor::query(client_state& client_state, std::string content) {
@@ -2084,28 +2373,39 @@ future<executor::request_return_type> executor::query(client_state& client_state
     rjson::value request_info = rjson::parse(content);
     elogger.trace("Querying {}", request_info);
 
-    schema_ptr schema = get_table_or_view(_proxy, request_info);
+    auto maybe_schema = get_table_or_view(_proxy, request_info);
+    if (std::holds_alternative<api_error>(maybe_schema)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_schema));
+    }
+    schema_ptr schema = std::get<schema_ptr>(maybe_schema);
 
     tracing::add_table_name(client_state.get_trace_state(), schema->ks_name(), schema->cf_name());
 
     rjson::value* exclusive_start_key = rjson::find(request_info, "ExclusiveStartKey");
-    db::consistency_level cl = get_read_consistency(request_info);
+    auto maybe_cl = get_read_consistency(request_info);
+    if (std::holds_alternative<api_error>(maybe_cl)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_cl));
+    }
+    db::consistency_level cl = std::get<db::consistency_level>(maybe_cl);
     rjson::value* limit_json = rjson::find(request_info, "Limit");
     uint32_t limit = limit_json ? limit_json->GetUint64() : query::max_partitions;
     if (limit <= 0) {
-        throw api_error("ValidationException", "Limit must be greater than 0");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Limit must be greater than 0"));
     }
 
     if (rjson::find(request_info, "KeyConditionExpression")) {
-        throw api_error("ValidationException", "KeyConditionExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "KeyConditionExpression is not yet implemented in alternator"));
     }
     if (rjson::find(request_info, "FilterExpression")) {
-        throw api_error("ValidationException", "FilterExpression is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "FilterExpression is not yet implemented in alternator"));
     }
-    bool forward = get_bool_attribute(request_info, "ScanIndexForward", true);
-    if (!forward) {
+    auto forward = get_bool_attribute(request_info, "ScanIndexForward", true);
+    if (std::holds_alternative<api_error>(forward)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(forward));
+    }
+    if (!std::get<bool>(forward)) {
         // FIXME: need to support the !forward (i.e., reverse sort order) case. See issue #5153.
-        throw api_error("ValidationException", "ScanIndexForward=false is not yet implemented in alternator");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "ScanIndexForward=false is not yet implemented in alternator"));
     }
 
     //FIXME(sarna): KeyConditions are deprecated in favor of KeyConditionExpression
@@ -2113,9 +2413,17 @@ future<executor::request_return_type> executor::query(client_state& client_state
     //FIXME(sarna): QueryFilter is deprecated in favor of FilterExpression
     rjson::value* query_filter = rjson::find(request_info, "QueryFilter");
 
-    auto [partition_ranges, ck_bounds] = calculate_bounds(schema, conditions);
+    auto maybe_bounds = calculate_bounds(schema, conditions);
+    if (std::holds_alternative<api_error>(maybe_bounds)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_bounds));
+    }
+    auto [partition_ranges, ck_bounds] = std::get<std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>>(std::move(maybe_bounds));
 
-    auto attrs_to_get = calculate_attrs_to_get(request_info);
+    auto maybe_attrs_to_get = calculate_attrs_to_get(request_info);
+    if (std::holds_alternative<api_error>(maybe_attrs_to_get)) {
+        return make_ready_future<executor::request_return_type>(std::get<api_error>(maybe_attrs_to_get));
+    }
+    auto attrs_to_get = std::get<std::unordered_set<std::string>>(std::move(maybe_attrs_to_get));
 
     ::shared_ptr<cql3::restrictions::statement_restrictions> filtering_restrictions;
     if (query_filter) {
@@ -2123,19 +2431,15 @@ future<executor::request_return_type> executor::query(client_state& client_state
         auto pk_defs = filtering_restrictions->get_partition_key_restrictions()->get_column_defs();
         auto ck_defs = filtering_restrictions->get_clustering_columns_restrictions()->get_column_defs();
         if (!pk_defs.empty()) {
-            throw api_error("ValidationException", format("QueryFilter can only contain non-primary key attributes: Primary key attribute: {}", pk_defs.front()->name_as_text()));
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                    format("QueryFilter can only contain non-primary key attributes: Primary key attribute: {}", pk_defs.front()->name_as_text())));
         }
         if (!ck_defs.empty()) {
-            throw api_error("ValidationException", format("QueryFilter can only contain non-primary key attributes: Primary key attribute: {}", ck_defs.front()->name_as_text()));
+            return make_ready_future<executor::request_return_type>(api_error("ValidationException",
+                    format("QueryFilter can only contain non-primary key attributes: Primary key attribute: {}", ck_defs.front()->name_as_text())));
         }
     }
     return do_query(schema, exclusive_start_key, std::move(partition_ranges), std::move(ck_bounds), std::move(attrs_to_get), limit, cl, std::move(filtering_restrictions), client_state, _stats.cql_stats);
-}
-
-static void validate_limit(int limit) {
-    if (limit < 1 || limit > 100) {
-        throw api_error("ValidationException", "Limit must be greater than 0 and no greater than 100");
-    }
 }
 
 future<executor::request_return_type> executor::list_tables(client_state& client_state, std::string content) {
@@ -2147,7 +2451,9 @@ future<executor::request_return_type> executor::list_tables(client_state& client
     rjson::value* limit_json = rjson::find(table_info, "Limit");
     std::string exclusive_start = exclusive_start_json ? exclusive_start_json->GetString() : "";
     int limit = limit_json ? limit_json->GetInt() : 100;
-    validate_limit(limit);
+    if (limit < 1 || limit > 100) {
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "Limit must be greater than 0 and no greater than 100"));
+    }
 
     auto table_names = _proxy.get_db().local().get_column_families()
             | boost::adaptors::map_values
@@ -2199,7 +2505,7 @@ future<executor::request_return_type> executor::describe_endpoints(client_state&
     // A "Host:" header includes both host name and port, exactly what we need
     // to return.
     if (host_header.empty()) {
-        throw api_error("ValidationException", "DescribeEndpoints needs a 'Host:' header in request");
+        return make_ready_future<executor::request_return_type>(api_error("ValidationException", "DescribeEndpoints needs a 'Host:' header in request"));
     }
     rjson::set(response, "Endpoints", rjson::empty_array());
     rjson::push_back(response["Endpoints"], rjson::empty_object());
