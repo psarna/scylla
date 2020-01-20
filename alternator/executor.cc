@@ -779,9 +779,12 @@ future<executor::request_return_type> executor::put_item(client_state& client_st
 
     return maybe_get_previous_item(_proxy, client_state, schema, item, has_expected, _stats).then(
             [this, schema, has_expected,  update_info = rjson::copy(update_info), m = std::move(m),
-             &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable {
+             &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable -> future<executor::request_return_type> {
         if (has_expected) {
-            verify_expected(update_info, previous_item);
+            std::optional<api_error> err = verify_expected(update_info, previous_item);
+            if (err) {
+                return make_ready_future<request_return_type>(*err);
+            }
         }
         return _proxy.mutate(std::vector<mutation>{std::move(m)}, db::consistency_level::LOCAL_QUORUM, default_timeout(), client_state.get_trace_state(), empty_service_permit()).then([this, start_time] () {
             _stats.api_operations.put_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.put_item_latency._count + 1);
@@ -836,9 +839,12 @@ future<executor::request_return_type> executor::delete_item(client_state& client
 
     return maybe_get_previous_item(_proxy, client_state, schema, key, has_expected, _stats).then(
             [this, schema, has_expected,  update_info = rjson::copy(update_info), m = std::move(m),
-             &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable {
+             &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable -> future<executor::request_return_type> {
         if (has_expected) {
-            verify_expected(update_info, previous_item);
+            std::optional<api_error> err = verify_expected(update_info, previous_item);
+            if (err) {
+                return make_ready_future<request_return_type>(*err);
+            }
         }
         return _proxy.mutate(std::vector<mutation>{std::move(m)}, db::consistency_level::LOCAL_QUORUM, default_timeout(), client_state.get_trace_state(), empty_service_permit()).then([this, start_time] () {
             _stats.api_operations.delete_item_latency.add(std::chrono::steady_clock::now() - start_time, _stats.api_operations.delete_item_latency._count + 1);
@@ -1477,9 +1483,12 @@ future<executor::request_return_type> executor::update_item(client_state& client
     return maybe_get_previous_item(_proxy, client_state, schema, pk, ck, has_update_expression, expression, has_expected, _stats).then(
             [this, schema, expression = std::move(expression), has_update_expression, ck = std::move(ck), has_expected,
              update_info = rjson::copy(update_info), m = std::move(m), attrs_collector = std::move(attrs_collector),
-             attribute_updates = rjson::copy(attribute_updates), ts, &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable {
+             attribute_updates = rjson::copy(attribute_updates), ts, &client_state, start_time] (std::unique_ptr<rjson::value> previous_item) mutable -> future<executor::request_return_type> {
         if (has_expected) {
-            verify_expected(update_info, previous_item);
+            std::optional<api_error> err = verify_expected(update_info, previous_item);
+            if (err) {
+                return make_ready_future<request_return_type>(*err);
+            }
         }
         auto& row = m.partition().clustered_row(*schema, ck);
         auto do_update = [&] (bytes&& column_name, const rjson::value& json_value) {

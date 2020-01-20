@@ -33,6 +33,7 @@
 
 #include "cql3/restrictions/statement_restrictions.hh"
 #include "serialization.hh"
+#include "alternator/error.hh"
 
 namespace alternator {
 
@@ -44,6 +45,6 @@ comparison_operator_type get_comparison_operator(const rjson::value& comparison_
 
 ::shared_ptr<cql3::restrictions::statement_restrictions> get_filtering_restrictions(schema_ptr schema, const column_definition& attrs_col, const rjson::value& query_filter);
 
-void verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value>& previous_item);
+std::optional<api_error> verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value>& previous_item);
 
 }

@@ -511,13 +511,13 @@ static bool verify_expected_one(const rjson::value& condition, const rjson::valu
 // This function will throw a ConditionalCheckFailedException API error
 // if the values do not match the condition, or ValidationException if there
 // are errors in the format of the condition itself.
-void verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value>& previous_item) {
+std::optional<api_error> verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value>& previous_item) {
     const rjson::value* expected = rjson::find(req, "Expected");
     if (!expected) {
-        return;
+        return {};
     }
     if (!expected->IsObject()) {
-        throw api_error("ValidationException", "'Expected' parameter, if given, must be an object");
+        return api_error("ValidationException", "'Expected' parameter, if given, must be an object");
     }
     // ConditionalOperator can be "AND" for requiring all conditions, or
     // "OR" for requiring one condition, and defaults to "AND" if missing.
@@ -525,7 +525,7 @@ void verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value
     bool require_all = true;
     if (conditional_operator) {
         if (!conditional_operator->IsString()) {
-            throw api_error("ValidationException", "'ConditionalOperator' parameter, if given, must be a string");
+            return api_error("ValidationException", "'ConditionalOperator' parameter, if given, must be a string");
         }
         std::string_view s(conditional_operator->GetString(), conditional_operator->GetStringLength());
         if (s == "AND") {
@@ -533,10 +533,10 @@ void verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value
         } else if (s == "OR") {
             require_all = false;
         } else {
-            throw api_error("ValidationException", "'ConditionalOperator' parameter must be AND, OR or missing");
+            return api_error("ValidationException", "'ConditionalOperator' parameter must be AND, OR or missing");
         }
         if (expected->GetObject().ObjectEmpty()) {
-            throw api_error("ValidationException", "'ConditionalOperator' parameter cannot be specified for empty Expression");
+            return api_error("ValidationException", "'ConditionalOperator' parameter cannot be specified for empty Expression");
         }
     }
 
@@ -548,17 +548,18 @@ void verify_expected(const rjson::value& req, const std::unique_ptr<rjson::value
         bool success = verify_expected_one(it->value, got);
         if (success && !require_all) {
             // When !require_all, one success is enough!
-            return;
+            return {};
         } else if (!success && require_all) {
             // When require_all, one failure is enough!
-            throw api_error("ConditionalCheckFailedException", "Failed condition.");
+            return api_error("ConditionalCheckFailedException", "Failed condition.");
         }
     }
     // If we got here and require_all, none of the checks failed, so succeed.
     // If we got here and !require_all, all of the checks failed, so fail.
     if (!require_all) {
-        throw api_error("ConditionalCheckFailedException", "None of ORed Expect conditions were successful.");
+        return api_error("ConditionalCheckFailedException", "None of ORed Expect conditions were successful.");
     }
+    return {};
 }
 
 }
