@@ -33,7 +33,6 @@ def delete_tags(table, arn):
         table.meta.client.untag_resource(ResourceArn=arn, TagKeys=[tag['Key'] for tag in got['Tags']])
 
 # Test checking that tagging and untagging is correctly handled
-@pytest.mark.xfail(reason="DescribeTable does not return ARN")
 def test_tag_resource_basic(test_table):
     got = test_table.meta.client.describe_table(TableName=test_table.name)['Table']
     arn =  got['TableArn']
@@ -76,7 +75,6 @@ def test_tag_resource_basic(test_table):
     assert len(got['Tags']) == 0
 
 # Test checking that incorrect parameters return proper error codes
-@pytest.mark.xfail(reason="DescribeTable does not return ARN")
 def test_tag_resource_incorrect(test_table):
     got = test_table.meta.client.describe_table(TableName=test_table.name)['Table']
     arn =  got['TableArn']

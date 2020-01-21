@@ -51,6 +51,7 @@
 #include "seastar/json/json_elements.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
 #include "collection_mutation.hh"
+#include "db/query_context.hh"
 
 #include <boost/range/adaptors.hpp>
 
@@ -485,6 +486,173 @@ static std::pair<std::string, std::string> parse_key_schema(const rjson::value& 
     return {hash_key, range_key};
 }
 
+static schema_ptr get_table_from_arn(service::storage_proxy& proxy, std::string_view arn) {
+    // Expected format: arn:scylla:alternator:${KEYSPACE_NAME}:scylla:table/${TABLE_NAME};
+    constexpr size_t prefix_size = sizeof("arn:scylla:alternator:") - 1;
+
+    if (arn.size() < prefix_size) {
+        throw api_error("AccessDeniedException", "Incorrect resource identifier");
+    }
+    size_t keyspace_end = arn.find_first_of(':', prefix_size);
+    std::string_view keyspace_name = arn.substr(prefix_size, keyspace_end - prefix_size);
+    size_t table_start = arn.find_last_of('/');
+    std::string_view table_name = arn.substr(table_start + 1);
+    // FIXME: remove sstring creation once find_schema gains a view-based interface
+    return proxy.get_db().local().find_schema(sstring(keyspace_name), sstring(table_name));
+}
+
+static future<std::unordered_map<sstring, bytes>>
+get_extensions_of_table(service::storage_proxy& proxy, schema_ptr schema) {
+    sstring req = format("SELECT extensions FROM system_schema.tables WHERE keyspace_name='{}' AND table_name='{}'", schema->ks_name(), schema->cf_name());
+    return db::execute_cql(std::move(req)).then([] (::shared_ptr<cql3::untyped_result_set> cql_result) {
+        if (cql_result->empty()) {
+            return std::unordered_map<sstring, bytes>();
+        }
+        const cql3::untyped_result_set::row& row = cql_result->front();
+        return row.get_map<sstring, bytes>("extensions");
+    });
+}
+
+static std::map<std::string_view, std::string_view> deserialize_tags(std::string_view tags_string) {
+    std::map<std::string_view, std::string_view> tags_map;
+    while (!tags_string.empty()) {
+        auto delim = tags_string.find_first_of(',');
+        if (delim == std::string_view::npos) {
+            throw api_error("ValidationException", "Incorrect serialized tag");
+        }
+        std::string_view tag_entry = tags_string.substr(0, delim);
+        auto in_entry_delim = tag_entry.find_first_of(';');
+        if (in_entry_delim == std::string_view::npos) {
+            throw api_error("ValidationException", "Incorrect serialized tag");
+        }
+        std::string_view tag_key = tag_entry.substr(0, in_entry_delim);
+        std::string_view tag_value = tag_entry.substr(in_entry_delim + 1);
+        tags_map.emplace(tag_key, tag_value);
+        tags_string.remove_prefix(delim + 1);
+    }
+    return tags_map;
+}
+
+enum class update_tags_action { add_tags, delete_tags };
+static future<> update_tags(const rjson::value& tags, schema_ptr schema, std::unordered_map<sstring, bytes>&& table_extensions, update_tags_action action) {
+     const bytes& tags_extension = table_extensions["alternator_tags"];
+    std::string_view existing_tags_string((std::string_view::value_type*)tags_extension.data(), tags_extension.size());
+    std::map<std::string_view, std::string_view> tags_map = deserialize_tags(existing_tags_string);
+
+    if (action == update_tags_action::add_tags) {
+        for (auto it = tags.Begin(); it != tags.End(); ++it) {
+            const rjson::value& key = (*it)["Key"];
+            const rjson::value& value = (*it)["Value"];
+            tags_map.emplace(std::string_view(key.GetString(), key.GetStringLength()), std::string_view(value.GetString(), value.GetStringLength()));
+        }
+    } else if (action == update_tags_action::delete_tags) {
+        for (auto it = tags.Begin(); it != tags.End(); ++it) {
+            std::string_view tag_key(it->GetString(), it->GetStringLength());
+            tags_map.erase(tag_key);
+        }
+    }
+
+    std::stringstream serialized_extensions;
+    serialized_extensions << '{';
+    // Existing extensions
+    for (auto& extension : table_extensions) {
+        if (extension.first == "alternator_tags") {
+            continue;
+        }
+        serialized_extensions << format("'{}':'{}',", extension.first, extension.second);
+    }
+    // Updated alternator tags
+    serialized_extensions << "'alternator_tags':0x";
+    std::stringstream serialized_tags;
+    for (auto& tag_entry : tags_map) {
+        serialized_tags << format("{};{},", tag_entry.first, tag_entry.second);
+    }
+    std::string serialized_tags_str = serialized_tags.str();
+    serialized_extensions << to_hex(bytes_view((bytes::value_type*)serialized_tags_str.data(), serialized_tags_str.size())) << '}';
+
+    sstring req = format("UPDATE system_schema.tables SET extensions = {} WHERE keyspace_name='{}' AND table_name='{}'", serialized_extensions.str(), schema->ks_name(), schema->cf_name());
+    return db::execute_cql(std::move(req)).discard_result();
+}
+
+static future<> add_tags(service::storage_proxy& proxy, schema_ptr schema, rjson::value& request_info) {
+    const rjson::value* tags = rjson::find(request_info, "Tags");
+    if (!tags || !tags->IsArray()) {
+        throw api_error("ValidationException", format("Cannot parse tags"));
+    }
+    if (tags->Size() < 1 || tags->Size() > 50) {
+        throw api_error("ValidationException", "The number of tags must be between 1 and 50");
+    }
+
+    return get_extensions_of_table(proxy, schema).then([new_tags = rjson::copy(*tags), schema] (std::unordered_map<sstring, bytes>&& table_extensions) {
+        return update_tags(new_tags, schema, std::move(table_extensions), update_tags_action::add_tags);
+    });
+}
+
+future<executor::request_return_type> executor::tag_resource(client_state& client_state, std::string content) {
+    _stats.api_operations.tag_resource++;
+
+    return seastar::async([this, &client_state, content = std::move(content)] () -> request_return_type {
+        rjson::value request_info = rjson::parse(content);
+        const rjson::value* arn = rjson::find(request_info, "ResourceArn");
+        if (!arn || !arn->IsString()) {
+            return api_error("AccessDeniedException", "Incorrect resource identifier");
+        }
+        schema_ptr schema = get_table_from_arn(_proxy, std::string_view(arn->GetString(), arn->GetStringLength()));
+        add_tags(_proxy, schema, request_info).get();
+        return json_string("");
+    });
+}
+
+future<executor::request_return_type> executor::untag_resource(client_state& client_state, std::string content) {
+    _stats.api_operations.untag_resource++;
+
+    return seastar::async([this, &client_state, content = std::move(content)] () -> request_return_type {
+        rjson::value request_info = rjson::parse(content);
+        const rjson::value* arn = rjson::find(request_info, "ResourceArn");
+        if (!arn || !arn->IsString()) {
+            return api_error("AccessDeniedException", "Incorrect resource identifier");
+        }
+        const rjson::value* tags = rjson::find(request_info, "TagKeys");
+        if (!tags || !tags->IsArray()) {
+            return api_error("ValidationException", format("Cannot parse tag keys"));
+        }
+
+        schema_ptr schema = get_table_from_arn(_proxy, std::string_view(arn->GetString(), arn->GetStringLength()));
+
+        auto table_extensions = get_extensions_of_table(_proxy, schema).get0();
+
+        update_tags(*tags, schema, std::move(table_extensions), update_tags_action::delete_tags).get();
+        return json_string("");
+    });
+}
+
+future<executor::request_return_type> executor::list_tags_of_resource(client_state& client_state, std::string content) {
+    _stats.api_operations.list_tags_of_resource++;
+    rjson::value request_info = rjson::parse(content);
+    const rjson::value* arn = rjson::find(request_info, "ResourceArn");
+    if (!arn || !arn->IsString()) {
+        return make_ready_future<request_return_type>(api_error("AccessDeniedException", "Incorrect resource identifier"));
+    }
+    schema_ptr schema = get_table_from_arn(_proxy, std::string_view(arn->GetString(), arn->GetStringLength()));
+
+    return get_extensions_of_table(_proxy, schema).then([] (std::unordered_map<sstring, bytes>&& table_extensions) {
+        rjson::value ret = rjson::empty_object();
+        rjson::set(ret, "Tags", rjson::empty_array());
+        const bytes& tags_extension = table_extensions["alternator_tags"];
+        std::string_view existing_tags_string((std::string_view::value_type*)tags_extension.data(), tags_extension.size());
+        std::map<std::string_view, std::string_view> tags_map = deserialize_tags(existing_tags_string);
+
+        rjson::value& tags = ret["Tags"];
+        for (auto& tag_entry : tags_map) {
+            rjson::value new_entry = rjson::empty_object();
+            rjson::set(new_entry, "Key", rjson::from_string(tag_entry.first));
+            rjson::set(new_entry, "Value", rjson::from_string(tag_entry.second));
+            rjson::push_back(tags, std::move(new_entry));
+        }
+
+        return make_ready_future<executor::request_return_type>(make_jsonable(std::move(ret)));
+    });
+}
 
 future<executor::request_return_type> executor::create_table(client_state& client_state, std::string content) {
     _stats.api_operations.create_table++;
