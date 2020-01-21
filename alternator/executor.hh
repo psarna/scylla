@@ -46,6 +46,7 @@ public:
     stats _stats;
     static constexpr auto ATTRS_COLUMN_NAME = ":attrs";
     static constexpr auto KEYSPACE_NAME = "alternator";
+    static constexpr auto TAGS_EXTENSION_NAME = "tags";
 
     executor(service::storage_proxy& proxy, service::migration_manager& mm) : _proxy(proxy), _mm(mm) {}
 
@@ -62,6 +63,9 @@ public:
     future<request_return_type> batch_write_item(client_state& client_state, std::string content);
     future<request_return_type> batch_get_item(client_state& client_state, std::string content);
     future<request_return_type> query(client_state& client_state, std::string content);
+    future<request_return_type> tag_resource(client_state& client_state, std::string content);
+    future<request_return_type> untag_resource(client_state& client_state, std::string content);
+    future<request_return_type> list_tags_of_resource(client_state& client_state, std::string content);
 
     future<> start();
     future<> stop() { return make_ready_future<>(); }
