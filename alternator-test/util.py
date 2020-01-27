@@ -85,7 +85,7 @@ def multiset(items):
     return collections.Counter([freeze(item) for item in items])
 
 
-test_table_prefix = 'alternator_test_'
+test_table_prefix = 'alternator_Test_'
 def test_table_name():
     current_ms = int(round(time.time() * 1000))
     # In the off chance that test_table_name() is called twice in the same millisecond...
