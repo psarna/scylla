@@ -1064,7 +1064,8 @@ future<> mutate_MV(
         db::view::stats& stats,
         cf_stats& cf_stats,
         db::timeout_semaphore_units pending_view_updates,
-        service::allow_hints allow_hints)
+        service::allow_hints allow_hints,
+        sync_local_view_updates sync_local_updates)
 {
     auto fs = std::make_unique<std::vector<future<>>>();
     fs->reserve(view_updates.size());
@@ -1120,8 +1121,12 @@ future<> mutate_MV(
                     --stats.writes;
                     return maybe_account_failure(std::move(f), utils::fb_utilities::get_broadcast_address(), true, 0);
                 });
-                //FIXME: discarded future
-                (void)local_view_update;
+                if (sync_local_updates) {
+                    fs->push_back(std::move(local_view_update));
+                } else {
+                    //FIXME: discarded future
+                    (void)local_view_update;
+                }
             } else {
                 vlogger.debug("Sending view update to endpoint {}, with pending endpoints = {}", *paired_endpoint, pending_endpoints);
                 // Note we don't wait for the asynchronous operation to complete

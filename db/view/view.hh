@@ -116,13 +116,16 @@ query::clustering_row_ranges calculate_affected_clustering_ranges(
         const mutation_partition& mp,
         const std::vector<view_ptr>& views);
 
+struct sync_local_view_updates_tag;
+using sync_local_view_updates = bool_class<sync_local_view_updates_tag>;
 future<> mutate_MV(
         const dht::token& base_token,
         std::vector<frozen_mutation_and_schema> view_updates,
         db::view::stats& stats,
         cf_stats& cf_stats,
         db::timeout_semaphore_units pending_view_updates,
-        service::allow_hints allow_hints);
+        service::allow_hints allow_hints,
+        sync_local_view_updates sync_local_updates);
 
 /**
  * create_virtual_column() adds a "virtual column" to a schema builder.
