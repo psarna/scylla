@@ -35,6 +35,37 @@ from botocore.exceptions import ClientError
 from util import random_string
 from sys import version_info
 
+# A helper function for changing write isolation policies
+def set_write_isolation(table, isolation):
+    got = table.meta.client.describe_table(TableName=table.name)['Table']
+    arn =  got['TableArn']
+    tags = [
+        {
+            'Key': 'system:write_isolation',
+            'Value': isolation
+        }
+    ]
+    table.meta.client.tag_resource(ResourceArn=arn, Tags=tags)
+
+# A helper function to clear previous isolation tags
+def clear_write_isolation(table):
+    got = table.meta.client.describe_table(TableName=table.name)['Table']
+    arn =  got['TableArn']
+    table.meta.client.untag_resource(ResourceArn=arn, TagKeys=['system:write_isolation'])
+
+# A helper function for running a test case with all permissive isolation levels,
+# i.e. these which allow RMW operations to happen:
+# 'a': always allow
+# 'o': only RMW goes through LWT
+# 'u': usafe RMW without LWT
+def do_test_with_permissive_isolation_levels(test_case, table, *args):
+    try:
+        for isolation in ['a', 'o', 'u']:
+            set_write_isolation(table, isolation)
+            test_case(table, *args)
+    finally:
+        clear_write_isolation(table)
+
 # Most of the tests in this file check that the ConditionExpression
 # parameter works for the UpdateItem operation. It should also work the
 # same for the PutItem and DeleteItem operations, and we'll make a small
@@ -49,7 +80,7 @@ def test_condition_expression_attribute_updates(test_table_s):
         test_table_s.update_item(Key={'p': p},
             AttributeUpdates={'a': {'Value': 1, 'Action': 'PUT'}},
             ConditionExpression='a = :oldval',
-            ExpressionAttributeValues={':oldval': 2})
+            ExpressionAttributeValues={':oldval': 2})    
 
 # The following string of tests will test conditions composed of a single
 # comparison of two attributes (as usual, each can be an attribute of the
@@ -70,7 +101,7 @@ def test_condition_expression_attribute_updates(test_table_s):
 # attribute from the request, and the case of comparing two different
 # attributes of the same item (the latter case wasn't possible to express
 # with Expected, and becomes possible with ConditionExpression).
-def test_update_condition_eq_success(test_table_s):
+def do_test_update_condition_eq_success(test_table_s):
     p = random_string()
     values = (1, "hello", True, b'xyz', None, ['hello', 42], {'hello': 'world'}, set(['hello', 'world']), set([1, 2, 3]), set([b'xyz', b'hi']))
     i = 0
@@ -91,9 +122,32 @@ def test_update_condition_eq_success(test_table_s):
             ExpressionAttributeValues={':i': i, ':val': val})
         assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['d'] == i
 
+def test_update_condition_eq_success(test_table_s):
+    do_test_with_permissive_isolation_levels(do_test_update_condition_eq_success, test_table_s)
+
+def test_update_condition_eq_forbid(dynamodb, test_table_s):
+    # Skip the test on AWS, which is oblivious of different policies
+    url = dynamodb.meta.client._endpoint.host
+    if url.endswith('.amazonaws.com'):
+        return
+    set_write_isolation(test_table_s, 'f')
+    with pytest.raises(ClientError, match='ValidationException.*not supported'):
+        do_test_update_condition_eq_success(test_table_s)
+    clear_write_isolation(test_table_s)
+
+def test_update_condition_eq_invalid(dynamodb, test_table_s):
+    # Skip the test on AWS, which is oblivious of different policies
+    url = dynamodb.meta.client._endpoint.host
+    if url.endswith('.amazonaws.com'):
+        return
+    set_write_isolation(test_table_s, 'g') # 'g' isolation level does not exist
+    with pytest.raises(ClientError, match='ValidationException.*Incorrect write isolation'):
+        do_test_update_condition_eq_success(test_table_s)
+    clear_write_isolation(test_table_s)
+
 # Comparing values of *different* types should always fail. Check all the
 # combination of different types.
-def test_update_condition_eq_different(test_table_s):
+def do_test_update_condition_eq_different(test_table_s):
     p = random_string()
     values = (1, "hello", True, b'xyz', None, ['hello', 42], {'hello': 'world'}, set(['hello', 'world']), set([1, 2, 3]), set([b'xyz', b'hi']))
     for val1 in values:
@@ -118,8 +172,11 @@ def test_update_condition_eq_different(test_table_s):
                         ConditionExpression='a = :val2',
                         ExpressionAttributeValues={':val1': val1, ':val2': val2})
 
+def test_update_condition_eq_different(test_table_s):
+    do_test_with_permissive_isolation_levels(do_test_update_condition_eq_different, test_table_s)
+
 # Also check an actual case of same time, but inequality.
-def test_update_condition_eq_unequal(test_table_s):
+def do_test_update_condition_eq_unequal(test_table_s):
     p = random_string()
     test_table_s.update_item(Key={'p': p},
         AttributeUpdates={'a': {'Value': 1, 'Action': 'PUT'}})
@@ -129,10 +186,13 @@ def test_update_condition_eq_unequal(test_table_s):
             ConditionExpression='a = :oldval',
             ExpressionAttributeValues={':val1': 3, ':oldval': 2})
 
+def test_update_condition_eq_unequal(test_table_s):
+    do_test_with_permissive_isolation_levels(do_test_update_condition_eq_unequal, test_table_s)    
+
 # Check that set equality is checked correctly. Unlike string equality (for
 # example), it cannot be done with just naive string comparison of the JSON
 # representation, and we need to allow for any order. (see issue #5021)
-def test_update_condition_eq_set(test_table_s):
+def do_test_update_condition_eq_set(test_table_s):
     p = random_string()
     # Because boto3 sorts the set values we give it, in order to generate a
     # set with a different order, we need to build it incrementally.
@@ -150,8 +210,11 @@ def test_update_condition_eq_set(test_table_s):
         ExpressionAttributeValues={':val1': 3, ':oldval': set(['chinchilla', 'cat', 'dog', 'mouse'])})
     assert 'b' in test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']
 
+def test_update_condition_eq_set(test_table_s):
+    do_test_with_permissive_isolation_levels(do_test_update_condition_eq_set, test_table_s)
+
 # Test for ConditionExpression with operator "<>" (non-equality),
-def test_update_condition_ne(test_table_s):
+def do_test_update_condition_ne(test_table_s):
     p = random_string()
     # We only check here one type of attributes (numbers), assuming that the
     # inequality code calls the equality-check code which we checked in more
@@ -189,6 +252,9 @@ def test_update_condition_ne(test_table_s):
         ConditionExpression='z <> :oldval',
         ExpressionAttributeValues={':newval': 3, ':oldval': 1})
     assert test_table_s.get_item(Key={'p': p}, ConsistentRead=True)['Item']['c'] == 3
+
+def test_update_condition_ne(test_table_s):
+    do_test_with_permissive_isolation_levels(do_test_update_condition_eq_different, test_table_s)
 
 # Test for ConditionExpression with operator "<"
 def test_update_condition_lt(test_table_s):
