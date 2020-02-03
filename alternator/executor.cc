@@ -1001,6 +1001,29 @@ public:
     enum class write_isolation {
         FORBID_RMW, LWT_ALWAYS, LWT_RMW_ONLY, UNSAFE_RMW
     };
+    static constexpr auto WRITE_ISOLATION_TAG_KEY = "system:write_isolation";
+
+    static write_isolation get_write_isolation_for_schema(schema_ptr schema) {
+        const auto& tags = get_tags_of_table(schema);
+        auto it = tags.find(WRITE_ISOLATION_TAG_KEY);
+        if (it == tags.end() || it->second.empty()) {
+            // By default, fall back to always enforcing LWT
+            return write_isolation::LWT_ALWAYS;
+        }
+        switch (it->second[0]) {
+        case 'f':
+            return write_isolation::FORBID_RMW;
+        case 'a':
+            return write_isolation::LWT_ALWAYS;
+        case 'o':
+            return write_isolation::LWT_RMW_ONLY;
+        case 'u':
+            return write_isolation::UNSAFE_RMW;
+        default:
+            throw api_error("ValidationException",
+                    format("Incorrect write isolation policy {}. Please use one of {{a, f, o, u}}", it->second[0]));
+        }
+    }
 
 protected:
     // The full request JSON
@@ -1011,14 +1034,15 @@ protected:
     schema_ptr _schema;
     partition_key _pk = partition_key::make_empty();
     clustering_key _ck = clustering_key::make_empty();
-    write_isolation _write_isolation = write_isolation::LWT_ALWAYS;
+    write_isolation _write_isolation;
 public:
     // The constructor of a rmw_operation subclass should parse the request
     // and try to discover as many input errors as it can before really
     // attempting the read or write operations.
     rmw_operation(service::storage_proxy& proxy, rjson::value&& request)
         : _request(std::move(request))
-        , _schema(get_table(proxy, _request)) {
+        , _schema(get_table(proxy, _request))
+        , _write_isolation(get_write_isolation_for_schema(_schema)) {
         // _pk and _ck will be assigned later, by the subclass's constructor
         // (each operation puts the key in a slightly different location in
         // the request).
