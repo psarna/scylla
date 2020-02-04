@@ -45,7 +45,7 @@ public:
     using request_return_type = std::variant<json::json_return_type, api_error>;
     stats _stats;
     static constexpr auto ATTRS_COLUMN_NAME = ":attrs";
-    static constexpr auto KEYSPACE_NAME = "alternator";
+    static constexpr auto KEYSPACE_NAME_PREFIX = "a#";
 
     executor(service::storage_proxy& proxy, service::migration_manager& mm) : _proxy(proxy), _mm(mm) {}
 
