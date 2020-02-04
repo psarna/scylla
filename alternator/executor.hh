@@ -69,7 +69,7 @@ public:
     future<> start();
     future<> stop() { return make_ready_future<>(); }
 
-    future<> maybe_create_keyspace();
+    future<> maybe_create_keyspace(sstring keyspace_name);
 
     static void maybe_trace_query(client_state& client_state, sstring_view op, sstring_view query);
 };
