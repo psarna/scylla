@@ -3047,6 +3047,11 @@ future<executor::request_return_type> executor::describe_endpoints(client_state&
     return make_ready_future<executor::request_return_type>(make_jsonable(std::move(response)));
 }
 
+static sstring get_local_datacenter() {
+    gms::inet_address addr = utils::fb_utilities::get_broadcast_address();
+    return locator::i_endpoint_snitch::get_local_snitch_ptr()->get_datacenter(addr);
+}
+
 // Create the keyspace in which we put all Alternator tables, if it doesn't
 // already exist.
 // Currently, we automatically configure the keyspace based on the number
@@ -3067,7 +3072,8 @@ future<> executor::maybe_create_keyspace(std::string_view keyspace_name) {
         } else {
             elogger.info("Creating keyspace '{}' for Alternator with RF={}.", keyspace_name_str, rf);
         }
-        auto ksm = keyspace_metadata::new_keyspace(keyspace_name_str, "org.apache.cassandra.locator.SimpleStrategy", {{"replication_factor", std::to_string(rf)}}, true);
+        auto dc = get_local_datacenter();
+        auto ksm = keyspace_metadata::new_keyspace(keyspace_name_str, "org.apache.cassandra.locator.NetworkTopologyStrategy", {{dc, std::to_string(rf)}}, true);
         try {
             return _mm.announce_new_keyspace(ksm, api::min_timestamp, false);
         } catch (exceptions::already_exists_exception& ignored) {
