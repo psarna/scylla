@@ -4996,3 +4996,19 @@ SEASTAR_TEST_CASE(test_time_uuid_fcts_result) {
         require_timestamp_timeuuid_or_date("tounixtimestamp");
     });
 }
+
+SEASTAR_TEST_CASE(test_views_with_future_tombstones) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (a int PRIMARY KEY, b int, c int, d int, e int);");
+        cquery_nofail(e, "CREATE MATERIALIZED VIEW tv AS SELECT * FROM t WHERE a IS NOT NULL and b IS NOT NULL PRIMARY KEY (b,a);");
+        cquery_nofail(e, "delete from t using timestamp 10 where a=1;");
+        auto msg = cquery_nofail(e, "select * from t;");
+        assert_that(msg).is_rows().with_size(0);
+        cquery_nofail(e, "insert into t (a,b,c,d,e) values (1,2,3,4,5) using timestamp 8;");
+        msg = cquery_nofail(e, "select * from t;");
+        assert_that(msg).is_rows().with_size(0);
+        msg = cquery_nofail(e, "select * from tv;");
+        assert_that(msg).is_rows().with_size(0);
+
+    });
+}
