@@ -263,12 +263,15 @@ future<executor::request_return_type> server::handle_api_request(std::unique_ptr
             throw api_error("UnknownOperationException",
                     format("Unsupported operation {}", op));
         }
-        //FIXME: Client state can provide more context, e.g. client's endpoint address
-        // We use unique_ptr because client_state cannot be moved or copied
-        return do_with(std::make_unique<executor::client_state>(executor::client_state::internal_tag()), [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] (std::unique_ptr<executor::client_state>& client_state) mutable {
-            tracing::trace_state_ptr trace_state = executor::maybe_trace_query(*client_state, op, req->content);
-            tracing::trace(trace_state, op);
-            return callback_it->second(_executor.local(), *client_state, trace_state, std::move(req)).finally([trace_state] {});
+        return with_gate(_pending_requests, [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] () mutable {
+            //FIXME: Client state can provide more context, e.g. client's endpoint address
+            // We use unique_ptr because client_state cannot be moved or copied
+            return do_with(std::make_unique<executor::client_state>(executor::client_state::internal_tag()),
+                    [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] (std::unique_ptr<executor::client_state>& client_state) mutable {
+                tracing::trace_state_ptr trace_state = executor::maybe_trace_query(*client_state, op, req->content);
+                tracing::trace(trace_state, op);
+                return callback_it->second(_executor.local(), *client_state, trace_state, std::move(req)).finally([trace_state] {});
+            });
         });
     });
 }
@@ -365,10 +368,10 @@ future<> server::stop() {
     auto& http_server = _control.server();
     auto& https_server = _https_control.server();
 
-    if (_https_enabled) {
-        return when_all_succeed(http_server.stop(), https_server.stop());
-    }
-    return http_server.stop();
+    future<> f = _https_enabled ? when_all_succeed(http_server.stop(), https_server.stop()) : http_server.stop();
+    return std::move(f).then([this] {
+        return _pending_requests.close();
+    });
 }
 
 }

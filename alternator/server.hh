@@ -41,6 +41,7 @@ class server {
     bool _https_enabled;
     bool _enforce_authorization;
     alternator_callbacks_map _callbacks;
+    seastar::gate _pending_requests;
 public:
     server(seastar::sharded<executor>& executor);
 
