@@ -44,7 +44,7 @@ rjson::value parse(const std::string& str) {
 
 rjson::value parse_raw(const char* c_str, size_t size) {
     rjson::document d;
-    d.Parse(c_str, size);
+    d.Parse<rapidjson::kParseIterativeFlag>(c_str, size);
     if (d.HasParseError()) {
         throw rjson::error(format("Parsing JSON failed: {}", GetParseError_En(d.GetParseError())));
     }
