@@ -1069,6 +1069,19 @@ int main(int ac, char** av) {
             static sharded<alternator::executor> alternator_executor;
             static alternator::server alternator_server(alternator_executor);
             if (cfg->alternator_port() || cfg->alternator_https_port()) {
+                static struct shutdown_alternator : public service::client_shutdown_listener {
+                    sharded<alternator::executor>& executor;
+                    alternator::server& server;
+                    shutdown_alternator(sharded<alternator::executor>& executor, alternator::server& server)
+                            : executor(executor), server(server) {}
+                    virtual void on_client_shutdown_requested() override {
+                        if (engine().cpu_id() == 0) {
+                            executor.stop().get();
+                            server.stop().get();
+                        }
+                    }
+                } alternator_shutdown_listener(alternator_executor, alternator_server);
+
                 if (!cfg->check_experimental(db::experimental_features_t::LWT)) {
                     throw std::runtime_error("Alternator enabled, but needs experimental LWT feature which wasn't enabled");
                 }
@@ -1107,6 +1120,7 @@ int main(int ac, char** av) {
                 with_scheduling_group(dbcfg.statement_scheduling_group, [addr, alternator_port, alternator_https_port, creds = std::move(creds), alternator_enforce_authorization] {
                     return alternator_server.init(addr, alternator_port, alternator_https_port, creds, alternator_enforce_authorization);
                 }).get();
+                ss.register_client_shutdown_listener(&alternator_shutdown_listener);
             }
 
             static redis_service redis;
@@ -1144,13 +1158,6 @@ int main(int ac, char** av) {
 
             auto do_drain = defer_verbose_shutdown("local storage", [] {
                 service::get_local_storage_service().drain_on_shutdown().get();
-            });
-
-            auto stop_alternator = defer_verbose_shutdown("alternator", [cfg] {
-                if (cfg->alternator_port() || cfg->alternator_https_port()) {
-                    alternator_server.stop().get();
-                    alternator_executor.stop().get();
-                }
             });
 
             auto stop_view_builder = defer_verbose_shutdown("view builder", [cfg] {
