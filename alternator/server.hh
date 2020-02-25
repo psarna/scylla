@@ -29,6 +29,7 @@
 #include <alternator/auth.hh>
 #include <utils/small_vector.hh>
 #include <seastar/core/units.hh>
+#include "alternator/json_parser.hh"
 
 namespace alternator {
 
@@ -45,6 +46,7 @@ class server {
     utils::small_vector<std::reference_wrapper<seastar::httpd::http_server_control>, 2> _enabled_servers;
     seastar::sharded<seastar::gate> _pending_requests;
     alternator_callbacks_map _callbacks;
+    seastar::sharded<json_parser> _json_parser;
 public:
     server(seastar::sharded<executor>& executor);
 
