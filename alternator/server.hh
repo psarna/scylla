@@ -29,10 +29,11 @@
 #include <alternator/auth.hh>
 #include <utils/small_vector.hh>
 #include <seastar/core/units.hh>
+#include "alternator/json_parser.hh"
 
 namespace alternator {
 
-class server {
+class server : public peering_sharded_service<server> {
     static constexpr size_t content_length_limit = 16*MB;
     using alternator_callback = std::function<future<executor::request_return_type>(executor&, executor::client_state&, tracing::trace_state_ptr, rjson::value, std::unique_ptr<request>)>;
     using alternator_callbacks_map = std::unordered_map<std::string_view, alternator_callback>;
@@ -45,11 +46,15 @@ class server {
     utils::small_vector<std::reference_wrapper<seastar::httpd::http_server_control>, 2> _enabled_servers;
     seastar::sharded<seastar::gate> _pending_requests;
     alternator_callbacks_map _callbacks;
+    json_parser _json_parser;
 public:
     server(seastar::sharded<executor>& executor);
 
     seastar::future<> init(net::inet_address addr, std::optional<uint16_t> port, std::optional<uint16_t> https_port, std::optional<tls::credentials_builder> creds, bool enforce_authorization);
     future<> stop();
+    future<> stop_json_parser() {
+        return _json_parser.stop();
+    }
 private:
     void set_routes(seastar::httpd::routes& r);
     future<> verify_signature(const seastar::httpd::request& r);

@@ -289,8 +289,9 @@ future<executor::request_return_type> server::handle_api_request(std::unique_ptr
                     [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] (std::unique_ptr<executor::client_state>& client_state) mutable {
                 tracing::trace_state_ptr trace_state = executor::maybe_trace_query(*client_state, op, req->content);
                 tracing::trace(trace_state, op);
-                rjson::value json_request = rjson::parse(req->content);
-                return callback_it->second(_executor.local(), *client_state, trace_state, std::move(json_request), std::move(req)).finally([trace_state] {});
+                return _json_parser.parse(req->content).then([this, callback_it = std::move(callback_it), &client_state, trace_state, req = std::move(req)] (rjson::value json_request) mutable {
+                    return callback_it->second(_executor.local(), *client_state, trace_state, std::move(json_request), std::move(req)).finally([trace_state] {});
+                });
             });
         });
     });
@@ -428,6 +429,10 @@ future<> server::stop() {
     }).then([this] {
         return _pending_requests.invoke_on_all([] (seastar::gate& pending) {
             return pending.close();
+        });
+    }).then([this] {
+        return container().invoke_on_all([this] (server& server) {
+            return server.stop_json_parser();
         });
     });
 

@@ -821,6 +821,7 @@ alternator = [
        'alternator/conditions.cc',
        'alternator/rjson.cc',
        'alternator/auth.cc',
+       'alternator/json_parser.cc',
 ]
 
 redis = [
