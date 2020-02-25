@@ -2997,6 +2997,9 @@ future<> storage_service::load_new_sstables(sstring ks_name, sstring cf_name) {
 void storage_service::shutdown_client_servers() {
     do_stop_rpc_server().get();
     do_stop_native_transport().get();
+    _client_shutdown_listeners.for_each([] (client_shutdown_listener* listener) {
+        listener->on_client_shutdown_requested();
+    });
 }
 
 std::unordered_multimap<inet_address, dht::token_range>

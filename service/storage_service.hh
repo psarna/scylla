@@ -66,6 +66,7 @@
 #include <seastar/core/rwlock.hh>
 #include "sstables/version.hh"
 #include "cdc/metadata.hh"
+#include "service/client_shutdown_listener.hh"
 
 namespace db {
 class system_distributed_keyspace;
@@ -175,6 +176,7 @@ private:
     seastar::metrics::metric_groups _metrics;
     size_t _service_memory_total;
     semaphore _service_memory_limiter;
+    atomic_vector<client_shutdown_listener*> _client_shutdown_listeners;
 
     /* For unit tests only.
      *
@@ -349,6 +351,12 @@ public:
 
     future<bool> is_native_transport_running();
 
+    void register_client_shutdown_listener(client_shutdown_listener* listener) {
+        _client_shutdown_listeners.add(listener);
+    }
+    future<> unregister_client_shutdown_listener(client_shutdown_listener* listener) {
+        return _client_shutdown_listeners.remove(listener);
+    }
 private:
     future<> do_stop_rpc_server();
     future<> do_stop_native_transport();
