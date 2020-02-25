@@ -289,8 +289,9 @@ future<executor::request_return_type> server::handle_api_request(std::unique_ptr
                     [this, callback_it = std::move(callback_it), op = std::move(op), req = std::move(req)] (std::unique_ptr<executor::client_state>& client_state) mutable {
                 tracing::trace_state_ptr trace_state = executor::maybe_trace_query(*client_state, op, req->content);
                 tracing::trace(trace_state, op);
-                rjson::value json_request = rjson::parse(req->content);
-                return callback_it->second(_executor.local(), *client_state, trace_state, std::move(json_request), std::move(req)).finally([trace_state] {});
+                return _json_parser.local().parse(req->content).then([this, callback_it = std::move(callback_it), &client_state, trace_state, req = std::move(req)] (rjson::value json_request) mutable {
+                    return callback_it->second(_executor.local(), *client_state, trace_state, std::move(json_request), std::move(req)).finally([trace_state] {});
+                });
             });
         });
     });
@@ -387,6 +388,7 @@ future<> server::init(net::inet_address addr, std::optional<uint16_t> port, std:
                 return e.start();
             }).get();
 
+            _json_parser.start().get();
             if (port) {
                 _control.start().get();
                 _control.set_routes(std::bind(&server::set_routes, this, std::placeholders::_1)).get();
@@ -429,9 +431,9 @@ future<> server::stop() {
         return _pending_requests.invoke_on_all([] (seastar::gate& pending) {
             return pending.close();
         });
+    }).then([this] {
+        return _json_parser.stop();
     });
-
 }
 
 }
-
