@@ -77,6 +77,7 @@
 #include "cdc/log.hh"
 #include "cdc/cdc_extension.hh"
 #include "alternator/tags_extension.hh"
+#include "db/view/sync_local_view_updates_extension.hh"
 
 namespace fs = std::filesystem;
 
@@ -435,6 +436,7 @@ int main(int ac, char** av) {
     auto ext = std::make_shared<db::extensions>();
     ext->add_schema_extension<alternator::tags_extension>(alternator::tags_extension::NAME);
     ext->add_schema_extension<cdc::cdc_extension>(cdc::cdc_extension::NAME);
+    ext->add_schema_extension<db::view::sync_local_view_updates_extension>(db::view::sync_local_view_updates_extension::NAME);
 
     auto cfg = make_lw_shared<db::config>(ext);
     auto init = app.get_options_description().add_options();
