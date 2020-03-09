@@ -1120,8 +1120,7 @@ future<> mutate_MV(
                     --stats.writes;
                     return maybe_account_failure(std::move(f), utils::fb_utilities::get_broadcast_address(), true, 0);
                 });
-                //FIXME: discarded future
-                (void)local_view_update;
+                fs->push_back(std::move(local_view_update));
             } else {
                 vlogger.debug("Sending view update to endpoint {}, with pending endpoints = {}", *paired_endpoint, pending_endpoints);
                 // Note we don't wait for the asynchronous operation to complete
