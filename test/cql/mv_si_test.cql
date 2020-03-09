@@ -1,0 +1,16 @@
+-- Simple test case for local materialized views with synchronous local updates
+CREATE TABLE t (p1 int, p2 int, c int, v int, primary key ((p1,p2),c));
+-- a local view - with identical partition key
+CREATE MATERIALIZED VIEW tv AS SELECT * FROM t WHERE p1 IS NOT NULL AND p2 IS NOT NULL AND c IS NOT NULL AND v IS NOT NULL PRIMARY KEY ((p1,p2),v,c);
+ALTER MATERIALIZED VIEW tv WITH sync_local_view_updates = true;
+INSERT INTO t (p1, p2, c, v) VALUES (1,2,3,4);
+INSERT INTO t (p1, p2, c, v) VALUES (2,3,4,5);
+SELECT * FROM tv;
+-- a local index - with underlying local view
+CREATE INDEX ON t(v);
+ALTER MATERIALIZED VIEW t_v_idx_index WITH sync_local_view_updates = true;
+INSERT INTO t (p1, p2, c, v) VALUES (3,4,5,6);
+INSERT INTO t (p1, p2, c, v) VALUES (4,5,6,6);
+SELECT * FROM t WHERE v = 6;
+ALTER MATERIALIZED VIEW tv WITH sync_local_view_updates = false;
+ALTER MATERIALIZED VIEW t_v_idx_index WITH sync_local_view_updates = false;
