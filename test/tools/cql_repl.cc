@@ -39,6 +39,7 @@
 #include "test/lib/exception_utils.hh"
 #include "alternator/tags_extension.hh"
 #include "cdc/cdc_extension.hh"
+#include "db/view/sync_local_view_updates_extension.hh"
 
 static std::ofstream std_cout;
 
@@ -118,6 +119,7 @@ void repl(seastar::app_template& app) {
     auto ext = std::make_shared<db::extensions>();
     ext->add_schema_extension<alternator::tags_extension>(alternator::tags_extension::NAME);
     ext->add_schema_extension<cdc::cdc_extension>(cdc::cdc_extension::NAME);
+    ext->add_schema_extension<db::view::sync_local_view_updates_extension>(db::view::sync_local_view_updates_extension::NAME);
     auto db_cfg = ::make_shared<db::config>(std::move(ext));
     db_cfg->enable_user_defined_functions({true}, db::config::config_source::CommandLine);
     db_cfg->experimental_features(db::experimental_features_t::all(), db::config::config_source::CommandLine);
