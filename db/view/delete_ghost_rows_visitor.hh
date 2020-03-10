@@ -24,7 +24,9 @@
 #include "service/storage_proxy.hh"
 #include "service/query_state.hh"
 #include "query-result-reader.hh"
+#include "service/pager/query_pagers.hh"
 
+template<typename UnderlyingVisitor = service::pager::noop_visitor>
 class delete_ghost_rows_visitor {
     service::storage_proxy& _proxy;
     service::query_state& _state;
@@ -34,8 +36,9 @@ class delete_ghost_rows_visitor {
     table& _view_table;
     schema_ptr _base_schema;
     std::optional<partition_key> _view_pk;
+    UnderlyingVisitor _underlying_visitor;
 public:
-    delete_ghost_rows_visitor(service::storage_proxy& proxy, service::query_state& state, view_ptr view, const cql3::query_options& options, db::timeout_clock::duration timeout_duration)
+    delete_ghost_rows_visitor(service::storage_proxy& proxy, service::query_state& state, view_ptr view, const cql3::query_options& options, db::timeout_clock::duration timeout_duration, UnderlyingVisitor&& visitor)
             : _proxy(proxy)
             , _state(state)
             , _options(options)
@@ -44,17 +47,21 @@ public:
             , _view_table(_proxy.get_db().local().find_column_family(view))
             , _base_schema(_proxy.get_db().local().find_schema(_view->view_info()->base_id()))
             , _view_pk()
+            , _underlying_visitor(std::move(visitor))
     {}
 
     void add_value(const column_definition& def, query::result_row_view::iterator_type& i) {
+        _underlying_visitor.add_value(def, i);
     }
 
     void accept_new_partition(const partition_key& key, uint32_t row_count) {
         assert(thread::running_in_thread());
         _view_pk = key;
+        _underlying_visitor.accept_new_partition(key, row_count);
     }
 
     void accept_new_partition(uint32_t row_count) {
+        _underlying_visitor.accept_new_partition(row_count);
     }
 
     // Assumes running in seastar::thread
@@ -93,13 +100,16 @@ public:
             row.apply(tombstone(api::new_timestamp(), gc_clock::now()));
             timeout = db::timeout_clock::now() + _timeout_duration;
             _proxy.mutate({m}, db::consistency_level::ALL, timeout, _state.get_trace_state(), empty_service_permit()).get();
+        } else {
+            _underlying_visitor.accept_new_row(ck, static_row, row);
         }
     }
 
     void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {
+        _underlying_visitor.accept_new_row(static_row, row);
     }
 
     uint32_t accept_partition_end(const query::result_row_view& static_row) {
-        return 0;
+        return _underlying_visitor.accept_partition_end(static_row);
     }
 };
