@@ -56,6 +56,14 @@ namespace service {
 
 namespace pager {
 
+struct noop_visitor {
+    void accept_new_partition(uint32_t) { }
+    void accept_new_partition(const partition_key& key, uint32_t row_count) { }
+    void accept_new_row(const clustering_key& key, const query::result_row_view& static_row, const query::result_row_view& row) { }
+    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) { }
+    uint32_t accept_partition_end(const query::result_row_view& static_row) { return 0; }
+};
+
 class query_pagers {
 public:
     static bool may_need_paging(const schema& s, uint32_t page_size, const query::read_command&,

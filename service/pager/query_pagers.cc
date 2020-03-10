@@ -55,14 +55,6 @@ static logging::logger qlogger("paging");
 
 namespace service::pager {
 
-struct noop_visitor {
-    void accept_new_partition(uint32_t) { }
-    void accept_new_partition(const partition_key& key, uint32_t row_count) { }
-    void accept_new_row(const clustering_key& key, const query::result_row_view& static_row, const query::result_row_view& row) { }
-    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) { }
-    uint32_t accept_partition_end(const query::result_row_view& static_row) { return 0; }
-};
-
 static bool has_clustering_keys(const schema& s, const query::read_command& cmd) {
     return s.clustering_key_size() > 0
             && !cmd.slice.options.contains<query::partition_slice::option::distinct>();
