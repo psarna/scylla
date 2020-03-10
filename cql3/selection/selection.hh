@@ -265,7 +265,7 @@ private:
 public:
     template<typename Func>
     auto with_thread_if_needed(Func&& func) {
-        if (_selectors->requires_thread()) {
+        if (true || _selectors->requires_thread()) {
             return async(std::move(func));
         } else {
             return futurize_apply(std::move(func));

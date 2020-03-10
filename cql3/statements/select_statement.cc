@@ -61,6 +61,7 @@
 #include "db/consistency_level_validations.hh"
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
+#include "db/view/delete_ghost_rows_visitor.hh"
 
 bool is_system_keyspace(const sstring& name);
 
@@ -360,8 +361,17 @@ select_statement::do_execute(service::storage_proxy& proxy,
 
     command->slice.options.set<query::partition_slice::option::allow_short_read>();
     auto timeout_duration = options.get_timeout_config().*get_timeout_config_selector();
-    auto p = service::pager::query_pagers::pager(_schema, _selection,
+
+    ::shared_ptr<service::pager::query_pager> p;
+    if (_schema->is_view()) {
+        static logging::logger srn("SARNA");
+        srn.warn("Using a view");
+        p = service::pager::query_pagers::ghost_row_deleting_pager(_schema, _selection, state, options, command,
+                std::move(key_ranges), _stats, proxy, timeout_duration, false, restrictions_need_filtering ? _restrictions : nullptr);
+    } else {
+        p = service::pager::query_pagers::pager(_schema, _selection,
             state, options, command, std::move(key_ranges), _stats, restrictions_need_filtering ? _restrictions : nullptr);
+    }
 
     if (aggregate || nonpaged_filtering) {
         return do_with(
@@ -651,13 +661,13 @@ select_statement::execute(service::storage_proxy& proxy,
                     return std::move(qr.query_result);
                 });
             }, std::move(merger));
-        }).then([this, &options, now, cmd] (auto result) {
-            return this->process_results(std::move(result), cmd, options, now);
+        }).then([this, &state, &options, now, cmd] (auto result) {
+            return this->process_results(std::move(result), cmd, state, options, now);
         });
     } else {
         return proxy.query(_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()})
-            .then([this, &options, now, cmd] (service::storage_proxy::coordinator_query_result qr) {
-                return this->process_results(std::move(qr.query_result), cmd, options, now);
+            .then([this, &state, &options, now, cmd] (service::storage_proxy::coordinator_query_result qr) {
+                return this->process_results(std::move(qr.query_result), cmd, state, options, now);
             });
     }
 }
@@ -676,17 +686,19 @@ indexed_table_select_statement::process_base_query_results(
         paging_state = generate_view_paging_state_from_base_query_results(paging_state, results, proxy, state, options);
         _selection->get_result_metadata()->maybe_set_paging_state(std::move(paging_state));
     }
-    return process_results(std::move(results), std::move(cmd), options, now);
+    return process_results(std::move(results), std::move(cmd), state, options, now);
 }
 
 future<shared_ptr<cql_transport::messages::result_message>>
 select_statement::process_results(foreign_ptr<lw_shared_ptr<query::result>> results,
                                   lw_shared_ptr<query::read_command> cmd,
+                                  service::query_state& state,
                                   const query_options& options,
                                   gc_clock::time_point now) const
 {
     const bool restrictions_need_filtering = _restrictions->need_filtering();
-    const bool fast_path = !needs_post_query_ordering() && _selection->is_trivial() && !restrictions_need_filtering;
+    const bool fast_path = !needs_post_query_ordering() && _selection->is_trivial() && !restrictions_need_filtering
+            && !_schema->is_view();
     if (fast_path) {
         return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(make_shared<cql_transport::messages::result_message::rows>(result(
             result_generator(_schema, std::move(results), std::move(cmd), _selection, _stats),
@@ -694,20 +706,32 @@ select_statement::process_results(foreign_ptr<lw_shared_ptr<query::result>> resu
         ));
     }
 
+    static logging::logger srn2("SARNA2");
     cql3::selection::result_set_builder builder(*_selection, now,
             options.get_cql_serialization_format());
-    return do_with(std::move(builder), [this, cmd, restrictions_need_filtering, results = std::move(results), options] (cql3::selection::result_set_builder& builder) mutable {
-        return builder.with_thread_if_needed([this, &builder, cmd, restrictions_need_filtering, results = std::move(results), options] {
+    return do_with(std::move(builder), [this, cmd, restrictions_need_filtering, results = std::move(results), &state, &options] (cql3::selection::result_set_builder& builder) mutable {
+        return builder.with_thread_if_needed([this, &builder, cmd, restrictions_need_filtering, results = std::move(results), &state, &options] {
+            service::storage_proxy& proxy = service::get_local_storage_proxy();
+            auto timeout_duration = options.get_timeout_config().*get_timeout_config_selector();
             if (restrictions_need_filtering) {
                 results->ensure_counts();
                 _stats.filtered_rows_read_total += *results->row_count();
-                query::result_view::consume(*results, cmd->slice,
-                        cql3::selection::result_set_builder::visitor(builder, *_schema,
-                                *_selection, cql3::selection::result_set_builder::restrictions_filter(_restrictions, options, cmd->row_limit, _schema, cmd->slice.partition_row_limit())));
+                auto visitor = cql3::selection::result_set_builder::visitor(builder, *_schema,
+                                *_selection, cql3::selection::result_set_builder::restrictions_filter(_restrictions, options, cmd->row_limit, _schema, cmd->slice.partition_row_limit()));
+                if (_schema->is_view()) {
+                    query::result_view::consume(*results, cmd->slice,
+                            delete_ghost_rows_visitor{proxy, state, view_ptr(_schema), options, timeout_duration, std::move(visitor)});
+                } else {
+                    query::result_view::consume(*results, cmd->slice, visitor);
+                }
             } else {
-                query::result_view::consume(*results, cmd->slice,
-                        cql3::selection::result_set_builder::visitor(builder, *_schema,
-                                *_selection));
+                auto visitor = cql3::selection::result_set_builder::visitor(builder, *_schema, *_selection);
+                if (_schema->is_view()) {
+                    query::result_view::consume(*results, cmd->slice,
+                            delete_ghost_rows_visitor{proxy, state, view_ptr(_schema), options, timeout_duration, std::move(visitor)}); 
+                } else {
+                    query::result_view::consume(*results, cmd->slice, visitor);
+                }
             }
             auto rs = builder.build();
 

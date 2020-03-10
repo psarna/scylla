@@ -135,7 +135,7 @@ public:
     };
 
     future<shared_ptr<cql_transport::messages::result_message>> process_results(foreign_ptr<lw_shared_ptr<query::result>> results,
-        lw_shared_ptr<query::read_command> cmd, const query_options& options, gc_clock::time_point now) const;
+        lw_shared_ptr<query::read_command> cmd, service::query_state& state, const query_options& options, gc_clock::time_point now) const;
 
     const sstring& keyspace() const;
 
