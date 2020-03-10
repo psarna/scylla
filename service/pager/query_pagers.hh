@@ -84,7 +84,9 @@ public:
             dht::partition_range_vector,
             cql3::cql_stats& stats,
             storage_proxy& proxy,
-            db::timeout_clock::duration timeout_duration);
+            db::timeout_clock::duration timeout_duration,
+            bool build_result,
+            ::shared_ptr<cql3::restrictions::statement_restrictions> filtering_restrictions);
 };
 
 }

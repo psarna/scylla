@@ -259,9 +259,12 @@ protected:
     }
 };
 
+template<bool BuildResult = false>
 class ghost_row_deleting_query_pager : public service::pager::query_pager {
     service::storage_proxy& _proxy;
     db::timeout_clock::duration _timeout_duration;
+    ::shared_ptr<cql3::restrictions::statement_restrictions> _filtering_restrictions;
+    cql3::cql_stats& _stats;
 public:
     ghost_row_deleting_query_pager(schema_ptr s, shared_ptr<const cql3::selection::selection> selection,
                 service::query_state& state,
@@ -270,22 +273,60 @@ public:
                 dht::partition_range_vector ranges,
                 cql3::cql_stats& stats,
                 service::storage_proxy& proxy,
-                db::timeout_clock::duration timeout_duration)
+                db::timeout_clock::duration timeout_duration,
+                ::shared_ptr<cql3::restrictions::statement_restrictions> filtering_restrictions)
         : query_pager(s, selection, state, options, std::move(cmd), std::move(ranges))
         , _proxy(proxy)
         , _timeout_duration(timeout_duration)
+        , _filtering_restrictions(filtering_restrictions)
+        , _stats(stats)
     {}
     virtual ~ghost_row_deleting_query_pager() {}
 
     virtual future<> fetch_page(cql3::selection::result_set_builder& builder, uint32_t page_size, gc_clock::time_point now, db::timeout_clock::time_point timeout) override {
         return do_fetch_page(page_size, now, timeout).then([this, &builder, page_size, now] (service::storage_proxy::coordinator_query_result qr) {
-            _last_replicas = std::move(qr.last_replicas);
-            _query_read_repair_decision = qr.read_repair_decision;
-            qr.query_result->ensure_counts();
-            return seastar::async([this, query_result = std::move(qr.query_result), page_size, now] () mutable {
-                handle_result(delete_ghost_rows_visitor{_proxy, _state, view_ptr(_schema), _options, _timeout_duration},
-                        std::move(query_result), page_size, now);
-            });
+            if constexpr (BuildResult) {
+                if (_filtering_restrictions) {
+                    return process_page_and_build_filtered_result(builder, page_size, now, std::move(qr));
+                } else {
+                    return process_page_and_build_result(builder, page_size, now, std::move(qr));
+                }
+            } else {
+                return process_page(builder, page_size, now, std::move(qr));
+            }
+        });
+    }
+protected:
+    future<> process_page(cql3::selection::result_set_builder& builder, uint32_t page_size, gc_clock::time_point now, service::storage_proxy::coordinator_query_result qr) {
+        _last_replicas = std::move(qr.last_replicas);
+        _query_read_repair_decision = qr.read_repair_decision;
+        qr.query_result->ensure_counts();
+        return seastar::async([this, query_result = std::move(qr.query_result), page_size, now] () mutable {
+            handle_result(delete_ghost_rows_visitor{_proxy, _state, view_ptr(_schema), _options, _timeout_duration, service::pager::noop_visitor{}},
+                    std::move(query_result), page_size, now);
+        });
+    }
+    future<> process_page_and_build_result(cql3::selection::result_set_builder& builder, uint32_t page_size,
+            gc_clock::time_point now, service::storage_proxy::coordinator_query_result qr) {
+        _last_replicas = std::move(qr.last_replicas);
+        _query_read_repair_decision = qr.read_repair_decision;
+        qr.query_result->ensure_counts();
+        _stats.filtered_rows_read_total += *qr.query_result->row_count();
+        return seastar::async([this, &builder, query_result = std::move(qr.query_result), page_size, now] () mutable {
+            auto visitor = cql3::selection::result_set_builder::visitor<>(builder, *_schema, *_selection);
+            handle_result(delete_ghost_rows_visitor{_proxy, _state, view_ptr(_schema), _options, _timeout_duration, std::move(visitor)}, std::move(query_result), page_size, now);
+        });
+    }
+    future<> process_page_and_build_filtered_result(cql3::selection::result_set_builder& builder, uint32_t page_size,
+            gc_clock::time_point now, service::storage_proxy::coordinator_query_result qr) {
+        _last_replicas = std::move(qr.last_replicas);
+        _query_read_repair_decision = qr.read_repair_decision;
+        qr.query_result->ensure_counts();
+        _stats.filtered_rows_read_total += *qr.query_result->row_count();
+        return seastar::async([this, &builder, query_result = std::move(qr.query_result), page_size, now] () mutable {
+            auto visitor = cql3::selection::result_set_builder::visitor(builder, *_schema, *_selection,
+                    cql3::selection::result_set_builder::restrictions_filter(_filtering_restrictions, _options, _max, _schema, _per_partition_limit, _last_pkey, _rows_fetched_for_last_partition));
+            handle_result(delete_ghost_rows_visitor{_proxy, _state, view_ptr(_schema), _options, _timeout_duration, std::move(visitor)}, std::move(query_result), page_size, now);
         });
     }
 };
@@ -458,7 +499,15 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
         dht::partition_range_vector ranges,
         cql3::cql_stats& stats,
         storage_proxy& proxy,
-        db::timeout_clock::duration duration) {
-    return ::make_shared<ghost_row_deleting_query_pager>(std::move(s), std::move(selection), state,
-            options, std::move(cmd), std::move(ranges), stats, proxy, duration);
+        db::timeout_clock::duration duration,
+        bool build_result,
+        ::shared_ptr<cql3::restrictions::statement_restrictions> filtering_restrictions
+        ) {
+    if (build_result) {
+        return ::make_shared<ghost_row_deleting_query_pager<true>>(std::move(s), std::move(selection), state,
+                options, std::move(cmd), std::move(ranges), stats, proxy, duration, filtering_restrictions);
+    } else {
+        return ::make_shared<ghost_row_deleting_query_pager<false>>(std::move(s), std::move(selection), state,
+                options, std::move(cmd), std::move(ranges), stats, proxy, duration, filtering_restrictions);
+    }
 }
