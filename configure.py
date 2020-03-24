@@ -863,6 +863,7 @@ parquet = [
         'parquet/compression.cc',
         'parquet/file_reader.cc',
         'parquet/io.cc',
+        'parquet/record_reader.cc',
         'parquet/schema.cc',
 ]
 
