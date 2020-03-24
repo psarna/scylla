@@ -861,6 +861,7 @@ parquet = [
         'parquet/untyped_schema.cc',
         'parquet/column_chunk_reader.cc',
         'parquet/compression.cc',
+        'parquet/file_reader.cc',
         'parquet/io.cc',
         'parquet/schema.cc',
 ]
