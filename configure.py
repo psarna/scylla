@@ -343,6 +343,7 @@ scylla_tests = set([
     'test/boost/network_topology_strategy_test',
     'test/boost/nonwrapping_range_test',
     'test/boost/observable_test',
+    'test/boost/parquet_rle_encoding_test',
     'test/boost/partitioner_test',
     'test/boost/querier_cache_test',
     'test/boost/query_processor_test',
