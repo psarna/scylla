@@ -862,6 +862,7 @@ parquet = [
         'parquet/column_chunk_reader.cc',
         'parquet/compression.cc',
         'parquet/io.cc',
+        'parquet/schema.cc',
 ]
 
 idls = ['idl/gossip_digest.idl.hh',
