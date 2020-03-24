@@ -858,6 +858,7 @@ redis = [
 
 parquet = [
         'parquet/parquet_types.cc',
+        'parquet/untyped_schema.cc',
 ]
 
 idls = ['idl/gossip_digest.idl.hh',
