@@ -211,7 +211,7 @@ get_table_or_view(service::storage_proxy& proxy, const rjson::value& request) {
     }
 
     // If no tables for global indexes were found, the index may be local
-    if (!proxy.get_db().local().has_schema(keyspace_name, table_name)) {
+    if (index_name && !proxy.get_db().local().has_schema(keyspace_name, table_name)) {
         type = table_or_view_type::lsi;
         table_name = lsi_name(orig_table_name, index_name->GetString());
     }
