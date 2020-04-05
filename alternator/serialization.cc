@@ -205,8 +205,9 @@ rjson::value json_key_column_value(bytes_view cell, const column_definition& col
         auto s = to_json_string(*decimal_type, bytes(cell));
         return rjson::from_string(s);
     } else {
-        // We shouldn't get here, we shouldn't see such key columns.
-        throw std::runtime_error(format("Unexpected key type: {}", column.type->name()));
+        // Support for arbitrary key types is useful for parsing values of virtual tables,
+        // which can involve any type supported by Scylla
+        return rjson::parse(column.type->to_string(bytes(cell)));
     }
 }
 
