@@ -855,6 +855,9 @@ redis = [
         'redis/lolwut.cc',
         ]
 
+parquet = [
+]
+
 idls = ['idl/gossip_digest.idl.hh',
         'idl/uuid.idl.hh',
         'idl/range.idl.hh',
@@ -902,7 +905,7 @@ scylla_tests_dependencies = scylla_core + idls + scylla_tests_generic_dependenci
 ]
 
 deps = {
-    'scylla': idls + ['main.cc', 'release.cc', 'build_id.cc'] + scylla_core + api + alternator + redis,
+    'scylla': idls + ['main.cc', 'release.cc', 'build_id.cc'] + scylla_core + api + alternator + redis + parquet,
     'test/tools/cql_repl': idls + ['test/tools/cql_repl.cc'] + scylla_core + scylla_tests_generic_dependencies,
 }
 
