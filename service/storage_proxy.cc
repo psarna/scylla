@@ -205,7 +205,7 @@ public:
         auto m = _mutations[utils::fb_utilities::get_broadcast_address()];
         if (m) {
             tracing::trace(tr_state, "Executing a mutation locally");
-            return sp.mutate_locally(_schema, *m, db::commitlog::force_sync::no, timeout);
+            return sp.mutate_locally(_schema, *m, std::move(tr_state), db::commitlog::force_sync::no, timeout);
         }
         return make_ready_future<>();
     }
@@ -256,7 +256,7 @@ public:
     virtual future<> apply_locally(storage_proxy& sp, storage_proxy::clock_type::time_point timeout,
             tracing::trace_state_ptr tr_state) override {
         tracing::trace(tr_state, "Executing a mutation locally");
-        return sp.mutate_locally(_schema, *_mutation, db::commitlog::force_sync::no, timeout);
+        return sp.mutate_locally(_schema, *_mutation, std::move(tr_state), db::commitlog::force_sync::no, timeout);
     }
     virtual future<> apply_remotely(storage_proxy& sp, gms::inet_address ep, std::vector<gms::inet_address>&& forward,
             storage_proxy::response_id_type response_id, storage_proxy::clock_type::time_point timeout,
@@ -286,7 +286,7 @@ public:
             tracing::trace_state_ptr tr_state) override {
         // A hint will be sent to all relevant endpoints when the endpoint it was originally intended for
         // becomes unavailable - this might include the current node
-        return sp.mutate_hint(_schema, *_mutation, timeout);
+        return sp.mutate_hint(_schema, *_mutation, std::move(tr_state), timeout);
     }
     virtual future<> apply_remotely(storage_proxy& sp, gms::inet_address ep, std::vector<gms::inet_address>&& forward,
             storage_proxy::response_id_type response_id, storage_proxy::clock_type::time_point timeout,
@@ -1765,38 +1765,40 @@ storage_proxy::response_id_type storage_proxy::unique_response_handler::release(
 }
 
 future<>
-storage_proxy::mutate_locally(const mutation& m, clock_type::time_point timeout) {
+storage_proxy::mutate_locally(const mutation& m, tracing::trace_state_ptr tr_state, clock_type::time_point timeout) {
     auto shard = _db.local().shard_of(m);
     get_stats().replica_cross_shard_ops += shard != this_shard_id();
-    return _db.invoke_on(shard, {_write_smp_service_group, timeout}, [s = global_schema_ptr(m.schema()), m = freeze(m), timeout] (database& db) -> future<> {
-        return db.apply(s, m, db::commitlog::force_sync::no, timeout);
+    return _db.invoke_on(shard, {_write_smp_service_group, timeout},
+            [s = global_schema_ptr(m.schema()), m = freeze(m), gtr = tracing::global_trace_state_ptr(std::move(tr_state)), timeout] (database& db) mutable -> future<> {
+        return db.apply(s, m, gtr.get(), db::commitlog::force_sync::no, timeout);
     });
 }
 
 future<>
-storage_proxy::mutate_locally(const schema_ptr& s, const frozen_mutation& m, db::commitlog::force_sync sync, clock_type::time_point timeout) {
+storage_proxy::mutate_locally(const schema_ptr& s, const frozen_mutation& m, tracing::trace_state_ptr tr_state, db::commitlog::force_sync sync, clock_type::time_point timeout) {
     auto shard = _db.local().shard_of(m);
     get_stats().replica_cross_shard_ops += shard != this_shard_id();
-    return _db.invoke_on(shard, {_write_smp_service_group, timeout}, [&m, gs = global_schema_ptr(s), timeout, sync] (database& db) -> future<> {
-        return db.apply(gs, m, sync, timeout);
+    return _db.invoke_on(shard, {_write_smp_service_group, timeout},
+            [&m, gs = global_schema_ptr(s), gtr = tracing::global_trace_state_ptr(std::move(tr_state)), timeout, sync] (database& db) mutable -> future<> {
+        return db.apply(gs, m, gtr.get(), sync, timeout);
     });
 }
 
 future<>
-storage_proxy::mutate_locally(std::vector<mutation> mutations, clock_type::time_point timeout) {
-    return do_with(std::move(mutations), [this, timeout] (std::vector<mutation>& pmut){
-        return parallel_for_each(pmut.begin(), pmut.end(), [this, timeout] (const mutation& m) {
-            return mutate_locally(m, timeout);
+storage_proxy::mutate_locally(std::vector<mutation> mutations, tracing::trace_state_ptr tr_state, clock_type::time_point timeout) {
+    return do_with(std::move(mutations), [this, timeout, tr_state = std::move(tr_state)] (std::vector<mutation>& pmut) mutable {
+        return parallel_for_each(pmut.begin(), pmut.end(), [this, tr_state = std::move(tr_state), timeout] (const mutation& m) mutable {
+            return mutate_locally(m, tr_state, timeout);
         });
     });
 }
 
 future<>
-storage_proxy::mutate_hint(const schema_ptr& s, const frozen_mutation& m, clock_type::time_point timeout) {
+storage_proxy::mutate_hint(const schema_ptr& s, const frozen_mutation& m, tracing::trace_state_ptr tr_state, clock_type::time_point timeout) {
     auto shard = _db.local().shard_of(m);
     get_stats().replica_cross_shard_ops += shard != this_shard_id();
-    return _db.invoke_on(shard, {_write_smp_service_group, timeout}, [&m, gs = global_schema_ptr(s), timeout] (database& db) -> future<> {
-        return db.apply_hint(gs, m, timeout);
+    return _db.invoke_on(shard, {_write_smp_service_group, timeout}, [&m, gs = global_schema_ptr(s), tr_state = std::move(tr_state), timeout] (database& db) mutable -> future<> {
+        return db.apply_hint(gs, m, std::move(tr_state), timeout);
     });
 }
 
@@ -1999,7 +2001,7 @@ future<std::vector<storage_proxy::unique_response_handler>> storage_proxy::mutat
 }
 
 future<> storage_proxy::mutate_begin(std::vector<unique_response_handler> ids, db::consistency_level cl,
-                                     std::optional<clock_type::time_point> timeout_opt) {
+                                     tracing::trace_state_ptr trace_state, std::optional<clock_type::time_point> timeout_opt) {
     return parallel_for_each(ids, [this, cl, timeout_opt] (unique_response_handler& protected_response) {
         auto response_id = protected_response.id;
         // This function, mutate_begin(), is called after a preemption point
@@ -2272,9 +2274,10 @@ storage_proxy::mutate_internal(Range mutations, db::consistency_level cl, bool c
     utils::latency_counter lc;
     lc.start();
 
-    return mutate_prepare(mutations, cl, type, tr_state, std::move(permit)).then([this, cl, timeout_opt, tracker = std::move(cdc_tracker)] (std::vector<storage_proxy::unique_response_handler> ids) {
+    return mutate_prepare(mutations, cl, type, tr_state, std::move(permit)).then([this, cl, timeout_opt, tracker = std::move(cdc_tracker),
+            tr_state] (std::vector<storage_proxy::unique_response_handler> ids) mutable {
         register_cdc_operation_result_tracker(ids, tracker);
-        return mutate_begin(std::move(ids), cl, timeout_opt);
+        return mutate_begin(std::move(ids), cl, tr_state, timeout_opt);
     }).then_wrapped([this, p = shared_from_this(), lc, tr_state] (future<> f) mutable {
         return p->mutate_end(std::move(f), lc, get_stats(), std::move(tr_state));
     });
@@ -2357,7 +2360,7 @@ storage_proxy::mutate_atomically(std::vector<mutation> mutations, db::consistenc
                 return _p.create_write_response_handler(ks, cl, type, std::make_unique<shared_mutation>(m), _batchlog_endpoints, {}, {}, _trace_state, _stats, std::move(permit));
             }).then([this, cl] (std::vector<unique_response_handler> ids) {
                 _p.register_cdc_operation_result_tracker(ids, _cdc_tracker);
-                return _p.mutate_begin(std::move(ids), cl, _timeout);
+                return _p.mutate_begin(std::move(ids), cl, _trace_state, _timeout);
             });
         }
         future<> sync_write_to_batchlog() {
@@ -2384,7 +2387,7 @@ storage_proxy::mutate_atomically(std::vector<mutation> mutations, db::consistenc
                 return sync_write_to_batchlog().then([this, ids = std::move(ids)] () mutable {
                     tracing::trace(_trace_state, "Sending batch mutations");
                     _p.register_cdc_operation_result_tracker(ids, _cdc_tracker);
-                    return _p.mutate_begin(std::move(ids), _cl, _timeout);
+                    return _p.mutate_begin(std::move(ids), _cl, _trace_state, _timeout);
                 }).then(std::bind(&context::async_remove_from_batchlog, this));
             });
         }
@@ -2427,6 +2430,7 @@ future<> storage_proxy::send_to_endpoint(
         gms::inet_address target,
         std::vector<gms::inet_address> pending_endpoints,
         db::write_type type,
+        tracing::trace_state_ptr tr_state,
         write_stats& stats,
         allow_hints allow_hints) {
     utils::latency_counter lc;
@@ -2466,8 +2470,8 @@ future<> storage_proxy::send_to_endpoint(
             nullptr,
             stats,
             std::move(permit));
-    }).then([this, cl, timeout = std::move(timeout)] (std::vector<unique_response_handler> ids) mutable {
-        return mutate_begin(std::move(ids), cl, std::move(timeout));
+    }).then([this, cl, tr_state = std::move(tr_state), timeout = std::move(timeout)] (std::vector<unique_response_handler> ids) mutable {
+        return mutate_begin(std::move(ids), cl, std::move(tr_state), std::move(timeout));
     }).then_wrapped([p = shared_from_this(), lc, &stats] (future<>&& f) {
         return p->mutate_end(std::move(f), lc, stats, nullptr);
     });
@@ -2478,12 +2482,14 @@ future<> storage_proxy::send_to_endpoint(
         gms::inet_address target,
         std::vector<gms::inet_address> pending_endpoints,
         db::write_type type,
+        tracing::trace_state_ptr tr_state,
         allow_hints allow_hints) {
     return send_to_endpoint(
             std::make_unique<shared_mutation>(std::move(fm_a_s)),
             std::move(target),
             std::move(pending_endpoints),
             type,
+            std::move(tr_state),
             get_stats(),
             allow_hints);
 }
@@ -2493,6 +2499,7 @@ future<> storage_proxy::send_to_endpoint(
         gms::inet_address target,
         std::vector<gms::inet_address> pending_endpoints,
         db::write_type type,
+        tracing::trace_state_ptr tr_state,
         write_stats& stats,
         allow_hints allow_hints) {
     return send_to_endpoint(
@@ -2500,6 +2507,7 @@ future<> storage_proxy::send_to_endpoint(
             std::move(target),
             std::move(pending_endpoints),
             type,
+            std::move(tr_state),
             stats,
             allow_hints);
 }
@@ -2511,6 +2519,7 @@ future<> storage_proxy::send_hint_to_endpoint(frozen_mutation_and_schema fm_a_s,
                 std::move(target),
                 { },
                 db::write_type::SIMPLE,
+                tracing::trace_state_ptr(),
                 get_stats(),
                 allow_hints::no);
     }
@@ -2520,6 +2529,7 @@ future<> storage_proxy::send_hint_to_endpoint(frozen_mutation_and_schema fm_a_s,
             std::move(target),
             { },
             db::write_type::SIMPLE,
+            tracing::trace_state_ptr(),
             get_stats(),
             allow_hints::no);
 }
@@ -4787,9 +4797,9 @@ void storage_proxy::init_messaging_service() {
         utils::UUID schema_version = in.schema_version();
         return handle_write(src_addr, t, schema_version, std::move(in), std::move(forward), reply_to, shard, response_id,
                 trace_info ? *trace_info : std::nullopt,
-                /* apply_fn */ [] (shared_ptr<storage_proxy>& p, tracing::trace_state_ptr, schema_ptr s, const frozen_mutation& m,
+                /* apply_fn */ [] (shared_ptr<storage_proxy>& p, tracing::trace_state_ptr tr_state, schema_ptr s, const frozen_mutation& m,
                         clock_type::time_point timeout) {
-                    return p->mutate_locally(std::move(s), m, db::commitlog::force_sync::no, timeout);
+                    return p->mutate_locally(std::move(s), m, std::move(tr_state), db::commitlog::force_sync::no, timeout);
                 },
                 /* forward_fn */ [] (netw::messaging_service::msg_addr addr, clock_type::time_point timeout, const frozen_mutation& m,
                         gms::inet_address reply_to, unsigned shard, response_id_type response_id,
