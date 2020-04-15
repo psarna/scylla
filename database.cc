@@ -1545,7 +1545,7 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, db::timeout_
     if (cf.views().empty()) {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout, sync).finally([op = std::move(op)] { });
     }
-    future<row_locker::lock_holder> f = cf.push_view_replica_updates(s, m, timeout);
+    future<row_locker::lock_holder> f = cf.push_view_replica_updates(s, m, timeout, make_query_class_config().semaphore);
     return f.then([this, s = std::move(s), uuid = std::move(uuid), &m, timeout, &cf, op = std::move(op), sync] (row_locker::lock_holder lock) mutable {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout, sync).finally(
                 // Hold the local lock on the base-table partition or row
