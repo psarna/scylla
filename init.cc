@@ -114,7 +114,9 @@ void init_ms_fd_gossiper(sharded<gms::gossiper>& gossiper
     scfg.statement = scheduling_config.statement;
     scfg.streaming = scheduling_config.streaming;
     scfg.gossip = scheduling_config.gossip;
-    netw::isolation_provider_factory isolation_provider_factory = netw::make_no_isolation_provider;
+    netw::isolation_provider_factory isolation_provider_factory = [user_sg = scfg.statement] {
+        return netw::make_statement_classifying_isolation_provider(default_scheduling_group(), user_sg);
+    };
     netw::get_messaging_service().start(listen, storage_port, ew, cw, tndw, ssl_storage_port, creds, mcfg, scfg,
             isolation_provider_factory, sltba).get();
 

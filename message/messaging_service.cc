@@ -112,6 +112,51 @@ std::unique_ptr<isolation_provider> make_no_isolation_provider() {
     return std::make_unique<no_isolation_provider>();
 }
 
+class statement_classifying_isolation_provider : public isolation_provider {
+    static const sstring system_cookie;
+
+private:
+    scheduling_group _system_sg;
+    scheduling_group _user_sg;
+
+public:
+    statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg)
+        : _system_sg(system_sg)
+        , _user_sg(user_sg) {
+    }
+    virtual connection_config get_connection_config(default_client_idx client_idx) override {
+        // We only care about statement connections.
+        if (client_idx != default_client_idx::statement0 && client_idx != default_client_idx::statement1) {
+            return {0, {}};
+        }
+        if (current_scheduling_group() == _user_sg) {
+            // Use the defaults.
+            return {0, {}};
+        }
+        // Assume everything else is system, send on separate connection.
+        if (client_idx == default_client_idx::statement0) {
+            return {1, {system_cookie}};
+        } else { // default_client_idx::statement1
+            return {2, {system_cookie}};
+        }
+    }
+    virtual rpc::isolation_config get_isolation_config(sstring isolation_cookie) override {
+        if (isolation_cookie.empty()) {
+            return {};
+        }
+        if (isolation_cookie == system_cookie) {
+            return {_system_sg};
+        }
+        throw std::runtime_error(fmt::format("statement_classifying_isolation_provider::get_isolation_config(): unrecognized isolation cookie: {}", isolation_cookie));
+    }
+};
+
+const sstring statement_classifying_isolation_provider::system_cookie = "$system";
+
+std::unique_ptr<isolation_provider> make_statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg) {
+    return std::make_unique<statement_classifying_isolation_provider>(system_sg, user_sg);
+}
+
 // thunk from rpc serializers to generate serializers
 template <typename T, typename Output>
 void write(serializer, Output& out, const T& data) {

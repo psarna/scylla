@@ -218,6 +218,19 @@ using isolation_provider_factory = std::function<std::unique_ptr<isolation_provi
 /// Default clients are used, no isolation.
 std::unique_ptr<isolation_provider> make_no_isolation_provider();
 
+/// Isolation provider that classifies statement operations based on the
+/// scheduling group they run in.
+///
+/// There are two classes:
+/// * user - operations done directly for or on behalf of user initiated
+///   operations.
+/// * system - operations done as part of internal system processes.
+///
+/// Operations are classified based on the scheduling group they run in, more
+/// concretely all operations running in the `user_sg` scheduling groups are
+/// classified as `user`, everything else is classified as `system`.
+std::unique_ptr<isolation_provider> make_statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg);
+
 class messaging_service : public seastar::async_sharded_service<messaging_service> {
 public:
     struct rpc_protocol_wrapper;
