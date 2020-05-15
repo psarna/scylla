@@ -30,12 +30,14 @@
 #include "db/config.hh"
 #include "atomic_cell.hh"
 #include "utils/exceptions.hh"
+#include "sstables/mc/parquet_writer.hh"
 
 #include <functional>
 #include <boost/iterator/iterator_facade.hpp>
 #include <boost/container/static_vector.hpp>
 
 logging::logger slogger("mc_writer");
+logging::logger parquet_logger("parquet_writer");
 
 namespace sstables {
 namespace mc {
@@ -535,6 +537,7 @@ private:
     bool _compression_enabled = false;
     std::unique_ptr<file_writer> _data_writer;
     std::unique_ptr<file_writer> _index_writer;
+    std::unique_ptr<parquet_writer::parquet_writer> _parquet_writer;
     bool _tombstone_written = false;
     bool _static_row_written = false;
     // The length of partition header (partition key, partition deletion and static row, if present)
@@ -845,6 +848,7 @@ void writer::init_file_writers() {
                 _schema.get_compressor_params()));
     }
     _index_writer = std::make_unique<file_writer>(std::move(_sst._index_file), options);
+    _parquet_writer = parquet_writer::parquet_writer::open(_schema);
 }
 
 std::unique_ptr<file_writer> writer::close_writer(std::unique_ptr<file_writer>& w) {
@@ -964,16 +968,21 @@ void writer::consume_new_partition(const dht::decorated_key& dk) {
     _pi_write_m.last_clustering.reset();
 
     write(_sst.get_version(), *_data_writer, p_key);
+    _parquet_writer->write_key(dk);
     _partition_header_length = _data_writer->offset() - _c_stats.start_offset;
 
     _tombstone_written = false;
     _static_row_written = false;
+
+    _parquet_writer->write_empty();
 }
 
 void writer::consume(tombstone t) {
     uint64_t current_pos = _data_writer->offset();
     auto dt = to_deletion_time(t);
     write(_sst.get_version(), *_data_writer, dt);
+    _parquet_writer->write_header_ldt(dt.local_deletion_time);
+    _parquet_writer->write_header_mfda(dt.marked_for_delete_at);
     _partition_header_length += (_data_writer->offset() - current_pos);
     _c_stats.update(t);
 
@@ -983,6 +992,7 @@ void writer::consume(tombstone t) {
 
 void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clustering_key, atomic_cell_view cell,
          const column_definition& cdef, const row_time_properties& properties, std::optional<bytes_view> cell_path) {
+    int ordinal_id = (int)cdef.ordinal_id;
 
     uint64_t current_pos = writer.size();
     bool is_deleted = !cell.is_live();
@@ -1010,18 +1020,32 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
         flags |= cell_flags::use_row_ttl_mask;
     }
     write(_sst.get_version(), writer, flags);
+    _parquet_writer->write_cell_flags(ordinal_id, (uint8_t)flags);
 
     if (!use_row_timestamp) {
         write_delta_timestamp(writer, cell.timestamp());
+        _parquet_writer->write_cell_dt(ordinal_id, cell.timestamp());
+    } else {
+        _parquet_writer->write_cell_dt_empty(ordinal_id);
     }
 
     if (!use_row_ttl) {
         if (is_deleted) {
             write_delta_local_deletion_time(writer, cell.deletion_time());
+            _parquet_writer->write_cell_dldt(ordinal_id, cell.deletion_time().time_since_epoch().count());
+            _parquet_writer->write_cell_dttl_empty(ordinal_id);
         } else if (is_cell_expiring) {
             write_delta_local_deletion_time(writer, cell.expiry());
+            _parquet_writer->write_cell_dldt(ordinal_id, cell.expiry().time_since_epoch().count());
             write_delta_ttl(writer, cell.ttl());
+            _parquet_writer->write_cell_dttl_empty(ordinal_id);
+        } else {
+            _parquet_writer->write_cell_dldt_empty(ordinal_id);
+            _parquet_writer->write_cell_dttl_empty(ordinal_id);
         }
+    } else {
+            _parquet_writer->write_cell_dldt_empty(ordinal_id);
+            _parquet_writer->write_cell_dttl_empty(ordinal_id);
     }
 
     if (bool(cell_path)) {
@@ -1041,8 +1065,13 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
     } else {
         if (has_value) {
             write_cell_value(writer, *cdef.type, cell.value());
+            _parquet_writer->write_cell_value(ordinal_id, cell.value());
+        } else {
+            _parquet_writer->write_cell_value_empty(ordinal_id);
         }
     }
+
+    _parquet_writer->finish_cell(ordinal_id);
 
     // Collect cell statistics
     // We record collections in write_collection, so ignore them here
@@ -1072,24 +1101,30 @@ void writer::write_cell(bytes_ostream& writer, const clustering_key_prefix* clus
 
 void writer::write_liveness_info(bytes_ostream& writer, const row_marker& marker) {
     if (marker.is_missing()) {
+        _parquet_writer->write_row_liveness_empty();
         return;
     }
 
     api::timestamp_type timestamp = marker.timestamp();
     _c_stats.update_timestamp(timestamp);
     write_delta_timestamp(writer, timestamp);
+    _parquet_writer->write_row_liveness_dt(timestamp);
 
     auto write_expiring_liveness_info = [this, &writer] (gc_clock::duration ttl, gc_clock::time_point ldt) {
         _c_stats.update_ttl(ttl);
         _c_stats.update_local_deletion_time_and_tombstone_histogram(ldt);
         write_delta_ttl(writer, ttl);
+        _parquet_writer->write_row_liveness_dttl(gc_clock::as_int32(ttl));
         write_delta_local_deletion_time(writer, ldt);
+        _parquet_writer->write_row_liveness_dldt(ldt.time_since_epoch().count());
     };
     if (!marker.is_live()) {
         write_expiring_liveness_info(gc_clock::duration(expired_liveness_ttl), marker.deletion_time());
     } else if (marker.is_expiring()) {
         write_expiring_liveness_info(marker.ttl(), marker.expiry());
     } else {
+        _parquet_writer->write_row_liveness_dttl_empty();
+        _parquet_writer->write_row_liveness_dldt_empty();
         _c_stats.update_ttl(0);
         _c_stats.update_local_deletion_time(std::numeric_limits<int32_t>::max());
     }
@@ -1151,9 +1186,17 @@ void writer::write_row_body(bytes_ostream& writer, const clustering_row& row, bo
     };
     if (row.tomb().regular()) {
         write_tombstone_and_update_stats(row.tomb().regular());
+        _parquet_writer->write_row_deletion_dmfda(row.tomb().regular().timestamp);
+        _parquet_writer->write_row_deletion_dldt(gc_clock::as_int32(row.tomb().regular().deletion_time));
+    } else {
+        _parquet_writer->write_row_deletion_empty();
     }
     if (row.tomb().is_shadowable()) {
         write_tombstone_and_update_stats(row.tomb().tomb());
+        _parquet_writer->write_row_shadowable_dmfda(row.tomb().tomb().timestamp);
+        _parquet_writer->write_row_shadowable_dldt(gc_clock::as_int32(row.tomb().tomb().deletion_time));
+    } else {
+        _parquet_writer->write_row_shadowable_empty();
     }
     row_time_properties properties;
     if (!row.marker().is_missing()) {
@@ -1198,7 +1241,9 @@ void writer::write_static_row(const row& static_row, column_kind kind) {
         flags |= row_flags::has_complex_deletion;
     }
     write(_sst.get_version(), *_data_writer, flags);
+    _parquet_writer->write_row_flags((uint8_t)flags);
     write(_sst.get_version(), *_data_writer, row_extended_flags::is_static);
+    _parquet_writer->write_row_extended_flags((uint8_t)row_extended_flags::is_static);
 
     write_vint(_tmp_bufs, 0); // as the static row always comes first, the previous row size is always zero
     write_cells(_tmp_bufs, nullptr, column_kind::static_column, static_row, row_time_properties{}, has_complex_deletion);
@@ -1209,6 +1254,7 @@ void writer::write_static_row(const row& static_row, column_kind kind) {
 
     collect_row_stats(_data_writer->offset() - current_pos, nullptr);
     _static_row_written = true;
+    _parquet_writer->finish_static_row();
 }
 
 stop_iteration writer::consume(static_row&& sr) {
@@ -1245,11 +1291,16 @@ void writer::write_clustered(const clustering_row& clustered_row, uint64_t prev_
         flags |= row_flags::has_complex_deletion;
     }
     write(_sst.get_version(), *_data_writer, flags);
+    _parquet_writer->write_row_flags((uint8_t)flags);
     if (ext_flags != row_extended_flags::none) {
         write(_sst.get_version(), *_data_writer, ext_flags);
+        _parquet_writer->write_row_extended_flags((uint8_t)ext_flags);
+    } else {
+        _parquet_writer->write_row_extended_flags_empty();
     }
 
     write_clustering_prefix(*_data_writer, _schema, clustered_row.key(), ephemerally_full_prefix{_schema.is_compact_table()});
+    _parquet_writer->write_clustering_key(clustered_row.key());
 
     write_vint(_tmp_bufs, prev_row_size);
     write_row_body(_tmp_bufs, clustered_row, has_complex_deletion);
@@ -1274,6 +1325,7 @@ stop_iteration writer::consume(clustering_row&& cr) {
     }
     drain_tombstones(position_in_partition_view::after_key(cr.key()));
     write_clustered(cr);
+    _parquet_writer->finish_clustering_row();
     return stop_iteration::no;
 }
 
@@ -1383,6 +1435,8 @@ stop_iteration writer::consume_end_of_partition() {
     }
     _last_key = std::move(*_partition_key);
     _partition_key = std::nullopt;
+
+    _parquet_writer->finish_partition();
     return get_data_offset() < _cfg.max_sstable_size ? stop_iteration::no : stop_iteration::yes;
 }
 
