@@ -128,15 +128,12 @@ private:
         return has_available_units(r) && _wait_list.empty();
     }
 
-    void consume_memory(size_t memory) {
-        _resources.memory -= memory;
+    void consume(const resources& r) {
+        _resources -= r;
     }
 
     void signal(const resources& r) noexcept;
 
-    void signal_memory(size_t memory) noexcept {
-        signal(resources(0, static_cast<ssize_t>(memory)));
-    }
 public:
     struct no_limits { };
 
