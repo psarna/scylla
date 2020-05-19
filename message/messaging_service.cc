@@ -99,6 +99,64 @@
 
 namespace netw {
 
+class no_isolation_provider : public isolation_provider {
+    virtual connection_config get_connection_config(default_client_idx) override {
+        return {0, {}};
+    }
+    virtual rpc::isolation_config get_isolation_config(sstring isolation_cookie) override {
+        return rpc::default_isolate_connection(std::move(isolation_cookie));
+    }
+};
+
+std::unique_ptr<isolation_provider> make_no_isolation_provider() {
+    return std::make_unique<no_isolation_provider>();
+}
+
+class statement_classifying_isolation_provider : public isolation_provider {
+    static const sstring system_cookie;
+
+private:
+    scheduling_group _system_sg;
+    scheduling_group _user_sg;
+
+public:
+    statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg)
+        : _system_sg(system_sg)
+        , _user_sg(user_sg) {
+    }
+    virtual connection_config get_connection_config(default_client_idx client_idx) override {
+        // We only care about statement connections.
+        if (client_idx != default_client_idx::statement0 && client_idx != default_client_idx::statement1) {
+            return {0, {}};
+        }
+        if (current_scheduling_group() == _user_sg) {
+            // Use the defaults.
+            return {0, {}};
+        }
+        // Assume everything else is system, send on separate connection.
+        if (client_idx == default_client_idx::statement0) {
+            return {1, {system_cookie}};
+        } else { // default_client_idx::statement1
+            return {2, {system_cookie}};
+        }
+    }
+    virtual rpc::isolation_config get_isolation_config(sstring isolation_cookie) override {
+        if (isolation_cookie.empty()) {
+            return {};
+        }
+        if (isolation_cookie == system_cookie) {
+            return {_system_sg};
+        }
+        throw std::runtime_error(fmt::format("statement_classifying_isolation_provider::get_isolation_config(): unrecognized isolation cookie: {}", isolation_cookie));
+    }
+};
+
+const sstring statement_classifying_isolation_provider::system_cookie = "$system";
+
+std::unique_ptr<isolation_provider> make_statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg) {
+    return std::make_unique<statement_classifying_isolation_provider>(system_sg, user_sg);
+}
+
 // thunk from rpc serializers to generate serializers
 template <typename T, typename Output>
 void write(serializer, Output& out, const T& data) {
@@ -270,7 +328,7 @@ bool messaging_service::knows_version(const gms::inet_address& endpoint) const {
 // Register a handler (a callback lambda) for verb
 template <typename Func>
 void register_handler(messaging_service* ms, messaging_verb verb, Func&& func) {
-    ms->rpc()->register_handler(verb, ms->scheduling_group_for_verb(verb), std::move(func));
+    ms->rpc()->register_handler(verb, ms->default_scheduling_group_for_verb(verb), std::move(func));
 }
 
 future<> messaging_service::unregister_handler(messaging_verb verb) {
@@ -279,7 +337,7 @@ future<> messaging_service::unregister_handler(messaging_verb verb) {
 
 messaging_service::messaging_service(gms::inet_address ip, uint16_t port)
     : messaging_service(std::move(ip), port, encrypt_what::none, compress_what::none, tcp_nodelay_what::all, 0, nullptr, memory_config{1'000'000},
-            scheduling_config{}, false)
+            scheduling_config{}, make_no_isolation_provider, false)
 {}
 
 static
@@ -321,6 +379,9 @@ void messaging_service::do_start_listen() {
     //        local or remote datacenter, and whether or not the connection will be used for gossip. We can fix
     //        the first by wrapping its server_socket, but not the second.
     auto limits = rpc_resource_limits(_mcfg.rpc_memory_limit);
+    limits.isolate_connection = [this] (sstring isolation_cookie) {
+        return _isolation_provider->get_isolation_config(std::move(isolation_cookie));
+    };
     if (!_server[0]) {
         auto listen = [&] (const gms::inet_address& a, rpc::streaming_domain_type sdomain) {
             so.streaming_domain = sdomain;
@@ -376,6 +437,7 @@ messaging_service::messaging_service(gms::inet_address ip
         , std::shared_ptr<seastar::tls::credentials_builder> credentials
         , messaging_service::memory_config mcfg
         , scheduling_config scfg
+        , isolation_provider_factory isolation_provider_factory
         , bool sltba)
     : _listen_address(ip)
     , _port(port)
@@ -388,6 +450,7 @@ messaging_service::messaging_service(gms::inet_address ip
     , _credentials_builder(credentials ? std::make_unique<seastar::tls::credentials_builder>(*credentials) : nullptr)
     , _mcfg(mcfg)
     , _scheduling_config(scfg)
+    , _isolation_provider(isolation_provider_factory())
 {
     _rpc->set_logger(&rpc_logger);
     register_handler(this, messaging_verb::CLIENT_ID, [] (rpc::client_info& ci, gms::inet_address broadcast_address, uint32_t src_cpu_id, rpc::optional<uint64_t> max_result_size) {
@@ -447,7 +510,7 @@ rpc::no_wait_type messaging_service::no_wait() {
 }
 
 
-static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
+static constexpr default_client_idx do_get_rpc_client_idx(messaging_verb verb) {
     switch (verb) {
     case messaging_verb::CLIENT_ID:
     case messaging_verb::MUTATION:
@@ -466,7 +529,7 @@ static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
     case messaging_verb::PAXOS_ACCEPT:
     case messaging_verb::PAXOS_LEARN:
     case messaging_verb::PAXOS_PRUNE:
-        return 0;
+        return default_client_idx::statement0;
     // GET_SCHEMA_VERSION is sent from read/mutate verbs so should be
     // sent on a different connection to avoid potential deadlocks
     // as well as reduce latency as there are potentially many requests
@@ -476,7 +539,7 @@ static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
     case messaging_verb::GOSSIP_SHUTDOWN:
     case messaging_verb::GOSSIP_ECHO:
     case messaging_verb::GET_SCHEMA_VERSION:
-        return 1;
+        return default_client_idx::gossip;
     case messaging_verb::PREPARE_MESSAGE:
     case messaging_verb::PREPARE_DONE_MESSAGE:
     case messaging_verb::STREAM_MUTATION:
@@ -499,38 +562,50 @@ static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
     case messaging_verb::REPAIR_PUT_ROW_DIFF_WITH_RPC_STREAM:
     case messaging_verb::REPAIR_GET_FULL_ROW_HASHES_WITH_RPC_STREAM:
     case messaging_verb::HINT_MUTATION:
-        return 2;
+        return default_client_idx::maintenance;
     case messaging_verb::MUTATION_DONE:
     case messaging_verb::MUTATION_FAILED:
-        return 3;
+        return default_client_idx::statement1;
     case messaging_verb::LAST:
-        return -1; // should never happen
+        return static_cast<default_client_idx>(-1); // should never happen
     }
 }
 
-static constexpr std::array<uint8_t, static_cast<size_t>(messaging_verb::LAST)> make_rpc_client_idx_table() {
-    std::array<uint8_t, static_cast<size_t>(messaging_verb::LAST)> tab{};
+static constexpr std::array<default_client_idx, static_cast<size_t>(messaging_verb::LAST)> make_rpc_client_idx_table() {
+    std::array<default_client_idx, static_cast<size_t>(messaging_verb::LAST)> tab{};
     for (size_t i = 0; i < tab.size(); ++i) {
         tab[i] = do_get_rpc_client_idx(messaging_verb(i));
     }
     return tab;
 }
 
-static std::array<uint8_t, static_cast<size_t>(messaging_verb::LAST)> s_rpc_client_idx_table = make_rpc_client_idx_table();
+static std::array<default_client_idx, static_cast<size_t>(messaging_verb::LAST)> s_rpc_client_idx_table = make_rpc_client_idx_table();
 
-static unsigned get_rpc_client_idx(messaging_verb verb) {
+static default_client_idx get_default_rpc_client_idx(messaging_verb verb) {
     return s_rpc_client_idx_table[static_cast<size_t>(verb)];
 }
 
+static isolation_provider::connection_config get_rpc_client_idx(isolation_provider& provider, messaging_verb verb) {
+    const auto default_client_id = get_default_rpc_client_idx(verb);
+    auto conn_config = provider.get_connection_config(default_client_id);
+    if (conn_config.client_idx) {
+        // Extra clients are mapped to [default_client_idx::count, +inf)
+        conn_config.client_idx = conn_config.client_idx + static_cast<unsigned>(default_client_idx::count) - 1;
+    } else {
+        conn_config.client_idx = static_cast<unsigned>(default_client_id);
+    }
+    return conn_config;
+}
+
 scheduling_group
-messaging_service::scheduling_group_for_verb(messaging_verb verb) const {
+messaging_service::default_scheduling_group_for_verb(messaging_verb verb) const {
     static const scheduling_group scheduling_config::*idx_to_group[] = {
         &scheduling_config::statement,
         &scheduling_config::gossip,
         &scheduling_config::streaming,
         &scheduling_config::statement,
     };
-    return _scheduling_config.*(idx_to_group[get_rpc_client_idx(verb)]);
+    return _scheduling_config.*(idx_to_group[static_cast<unsigned>(get_default_rpc_client_idx(verb))]);
 }
 
 /**
@@ -578,7 +653,7 @@ void messaging_service::cache_preferred_ip(gms::inet_address ep, gms::inet_addre
 
 shared_ptr<messaging_service::rpc_protocol_client_wrapper> messaging_service::get_rpc_client(messaging_verb verb, msg_addr id) {
     assert(!_stopping);
-    auto idx = get_rpc_client_idx(verb);
+    auto [idx, isolation_cookie_opt] = get_rpc_client_idx(*_isolation_provider, verb);
     auto it = _clients[idx].find(id);
 
     if (it != _clients[idx].end()) {
@@ -643,6 +718,9 @@ shared_ptr<messaging_service::rpc_protocol_client_wrapper> messaging_service::ge
     }
     opts.tcp_nodelay = must_tcp_nodelay;
     opts.reuseaddr = true;
+    if (isolation_cookie_opt) {
+        opts.isolation_cookie = std::move(*isolation_cookie_opt);
+    }
 
     auto client = must_encrypt ?
                     ::make_shared<rpc_protocol_client_wrapper>(*_rpc, std::move(opts),
@@ -690,7 +768,7 @@ bool messaging_service::remove_rpc_client_one(clients_map& clients, msg_addr id,
 }
 
 void messaging_service::remove_error_rpc_client(messaging_verb verb, msg_addr id) {
-    if (remove_rpc_client_one(_clients[get_rpc_client_idx(verb)], id, true)) {
+    if (remove_rpc_client_one(_clients[get_rpc_client_idx(*_isolation_provider, verb).client_idx], id, true)) {
         for (auto&& cb : _connection_drop_notifiers) {
             cb(id.addr);
         }

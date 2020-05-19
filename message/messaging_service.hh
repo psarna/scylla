@@ -46,6 +46,10 @@
 #include <seastar/net/tls.hh>
 
 // forward declarations
+namespace seastar::rpc {
+    struct isolation_config;
+}
+
 namespace streaming {
     class prepare_message;
 }
@@ -143,6 +147,14 @@ enum class messaging_verb : int32_t {
     LAST = 44,
 };
 
+enum class default_client_idx : unsigned {
+    statement0 = 0,
+    gossip = 1,
+    maintenance = 2,
+    statement1 = 3,
+    count = 4, // provides the number of default clients
+};
+
 } // namespace netw
 
 namespace std {
@@ -162,6 +174,62 @@ struct serializer {};
 struct schema_pull_options {
     bool remote_supports_canonical_mutation_retval = true;
 };
+
+/// Isolation provider interface.
+///
+/// Allows for extensible isolation configuration for messaging service
+/// connections.
+class isolation_provider {
+public:
+    /// Client side connection isolation configuration.
+    ///
+    /// The client_idx specifies the actual client the logical client should be
+    /// routed to. If 0, the default client is used. The client_idx is an
+    /// abstract identifier, for client_idx:s not seen yet, a new rpc client
+    /// will be created. The isolation_cookie communicates the desired isolation
+    /// configuration the verb handler to be executed in. This works in tandem
+    /// with get_isolation_config(), which will translate this back to actual
+    /// isolation configuration.
+    struct connection_config {
+        unsigned client_idx; // 0 -> use default rpc clients
+        std::optional<sstring> isolation_cookie;
+    };
+
+public:
+    virtual ~isolation_provider() = default;
+
+    /// Client side isolation configuration for the logical connection.
+    ///
+    /// Selects the actual connection for the logical connection and
+    /// optionally specifies an abstract isolation cookie for it.
+    virtual connection_config get_connection_config(default_client_idx client_idx) = 0;
+
+    /// Server side isolation configuration.
+    ///
+    /// Maps the abstract isolation cookie sent by the remote to an actual
+    /// isolation configuration for the verb handler.
+    virtual rpc::isolation_config get_isolation_config(sstring isolation_cookie) = 0;
+};
+
+using isolation_provider_factory = std::function<std::unique_ptr<isolation_provider>()>;
+
+/// Default isolation provider.
+///
+/// Default clients are used, no isolation.
+std::unique_ptr<isolation_provider> make_no_isolation_provider();
+
+/// Isolation provider that classifies statement operations based on the
+/// scheduling group they run in.
+///
+/// There are two classes:
+/// * user - operations done directly for or on behalf of user initiated
+///   operations.
+/// * system - operations done as part of internal system processes.
+///
+/// Operations are classified based on the scheduling group they run in, more
+/// concretely all operations running in the `user_sg` scheduling groups are
+/// classified as `user`, everything else is classified as `system`.
+std::unique_ptr<isolation_provider> make_statement_classifying_isolation_provider(scheduling_group system_sg, scheduling_group user_sg);
 
 class messaging_service : public seastar::async_sharded_service<messaging_service> {
 public:
@@ -245,6 +313,7 @@ private:
     std::list<std::function<void(gms::inet_address ep)>> _connection_drop_notifiers;
     memory_config _mcfg;
     scheduling_config _scheduling_config;
+    std::unique_ptr<isolation_provider> _isolation_provider;
 public:
     using clock_type = lowres_clock;
 public:
@@ -252,7 +321,7 @@ public:
             uint16_t port = 7000);
     messaging_service(gms::inet_address ip, uint16_t port, encrypt_what, compress_what, tcp_nodelay_what,
             uint16_t ssl_port, std::shared_ptr<seastar::tls::credentials_builder>,
-            memory_config mcfg, scheduling_config scfg, bool sltba = false);
+            memory_config mcfg, scheduling_config scfg, isolation_provider_factory isolation_provider_factory, bool sltba = false);
     ~messaging_service();
 public:
     future<> start_listen();
@@ -523,7 +592,7 @@ public:
     void unregister_connection_drop_notifier(drop_notifier_handler h);
     std::unique_ptr<rpc_protocol_wrapper>& rpc();
     static msg_addr get_source(const rpc::client_info& client);
-    scheduling_group scheduling_group_for_verb(messaging_verb verb) const;
+    scheduling_group default_scheduling_group_for_verb(messaging_verb verb) const;
 };
 
 extern distributed<messaging_service> _the_messaging_service;
