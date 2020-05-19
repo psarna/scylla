@@ -1101,8 +1101,9 @@ future<> mutate_MV(
             }
         };
         if (paired_endpoint) {
-            // If paired endpoint is present, remove it from the list of pending endpoints to avoid duplicates
-            pending_endpoints.erase(std::remove(pending_endpoints.begin(), pending_endpoints.end(), *paired_endpoint), pending_endpoints.end());
+            //HACK(sarna): let's always provide duplicates
+            pending_endpoints.push_back(*paired_endpoint);
+            vlogger.warn("Paired endpoint {}, pending endpoints {}", *paired_endpoint, pending_endpoints);
             // When paired endpoint is the local node, we can just apply
             // the mutation locally, unless there are pending endpoints, in
             // which case we want to do an ordinary write so the view mutation
