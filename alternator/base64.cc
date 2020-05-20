@@ -26,6 +26,7 @@
 #include "base64.hh"
 
 #include <ctype.h>
+#include <fmt/format.h>
 
 
 // Arrays for quickly converting to and from an integer between 0 and 63,
@@ -124,4 +125,30 @@ size_t base64_padding_len(std::string_view str) {
 
 size_t base64_decoded_len(std::string_view str) {
     return str.size() / 4 * 3 - base64_padding_len(str);
+}
+
+bool base64_begins_with(std::string_view base, std::string_view operand) {
+    if (base.size() % 4 != 0 || operand.size() % 4 != 0) {
+        throw std::runtime_error(fmt::format("Invalid base64-encoded values: {}, {}", base, operand));
+    }
+    if (base.size() < operand.size()) {
+        return false;
+    }
+    switch (base64_padding_len(operand)) {
+    case 0:
+        return base.substr(0, operand.size()) == operand;
+    case 1:
+        // fall-through
+    case 2: {
+        const std::string_view unpadded_base_prefix = base.substr(0, operand.size() - 4);
+        const std::string_view unpadded_operand = operand.substr(0, operand.size() - 4);
+        // Decode and compare last 4 bytes of base64-encoded strings
+        const std::string base_remainder = base64_decode_string(base.substr(operand.size() - 4, operand.size()));
+        const std::string operand_remainder = base64_decode_string(operand.substr(operand.size() - 4));
+        return unpadded_base_prefix == unpadded_operand
+                && base_remainder.substr(0, operand_remainder.size()) == operand_remainder;
+    }
+    default:
+        __builtin_unreachable();
+    }
 }
