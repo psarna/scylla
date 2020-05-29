@@ -36,33 +36,86 @@ uint64_t from_varint_to_integer(const utils::multiprecision_int& varint) {
     return static_cast<uint64_t>(~static_cast<uint64_t>(0) & boost::multiprecision::cpp_int(varint));
 }
 
+static int get_digit(char c) {
+    return c - '0';
+}
 
 big_decimal::big_decimal(sstring_view text)
 {
-    std::string str(text);
-    static const std::regex big_decimal_re("^([\\+\\-]?)([0-9]*)(\\.([0-9]*))?([eE]([\\+\\-]?[0-9]+))?");
-    std::smatch sm;
-    if (!std::regex_match(str, sm, big_decimal_re)) {
-        throw marshal_exception(format("big_decimal contains invalid characters: '{}'", str));
+    if (text.empty()) {
+        throw marshal_exception("big_decimal - both integer and fraction are empty");
     }
-    bool negative = sm[1] == "-";
-    auto integer = sm[2].str();
-    auto fraction = sm[4].str();
-    auto exponent = sm[6].str();
-    if (integer.empty() && fraction.empty()) {
-        throw marshal_exception(format("big_decimal - both integer and fraction are empty: '{}'", str));
+    _scale = 0;
+    uint64_t acc = 0;
+    bool with_fraction = false;
+    bool negative = false;
+    unsigned i = 0;
+    if (text[0] == '-') {
+        ++i;
+        negative = true;
     }
-    integer.append(fraction);
-    unsigned i;
-    for (i = 0; i < integer.size() - 1 && integer[i] == '0'; i++);
-    integer = integer.substr(i);
+    // First, optimistic iteration - try accumulating in uint64_t
+    while (i < 19 && i < text.size() && ::isdigit(text[i])) {
+        acc = acc * 10 + get_digit(text[i]);
+        ++i;
+    }
+    if (i == text.size()) {
+        _unscaled_value = boost::multiprecision::cpp_int(acc);
+        if (negative) {
+            _unscaled_value *= -1;
+        }
+        return;
+    }
+    if (text[i] == '.') {
+        with_fraction = true;
+        i++;
+        // Optimistic iteration, taking fraction into account
+        while (i < 19 && i < text.size() && ::isdigit(text[i])) {
+            acc = acc * 10 + get_digit(text[i]);
+            ++_scale;
+            ++i;
+        }
+    }
 
-    _unscaled_value = boost::multiprecision::cpp_int(integer);
+    _unscaled_value = boost::multiprecision::cpp_int(acc);
+    // Regular iteration - accumulating in multiprecision int
+    while (i < text.size() && ::isdigit(text[i])) {
+        _unscaled_value = _unscaled_value * 10 + get_digit(text[i]);
+        _scale += with_fraction;
+        ++i;
+    }
+    if (i == text.size()) {
+        if (negative) {
+            _unscaled_value *= -1;
+        }
+        return;
+    }
+    // Regular iteration, taking fraction into account
+    if (text[i] == '.') {
+        ++i;
+        if (with_fraction) {
+            throw marshal_exception(format("big_decimal - too many dots: {}", text));
+        }
+        while (i < text.size() && ::isdigit(text[i])) {
+            _unscaled_value = _unscaled_value * 10 + get_digit(text[i]);
+            ++_scale;
+            ++i;
+        }
+    }
     if (negative) {
         _unscaled_value *= -1;
     }
-    _scale = exponent.empty() ? 0 : -boost::lexical_cast<int32_t>(exponent);
-    _scale += fraction.size();
+    if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+        if (i == text.size() - 1) {
+            throw marshal_exception(format("big_decimal - empty exponent: {}", text));
+        }
+        std::string_view exponent = text.substr(i + 1);
+        try {
+            _scale -= (exponent.empty() ? 0 : boost::lexical_cast<int32_t>(exponent));
+        } catch (...) {
+            throw marshal_exception(format("Failed to parse exponent from {}", text));
+        }
+    }
 }
 
 sstring big_decimal::to_string() const
