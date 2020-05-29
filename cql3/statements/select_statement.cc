@@ -647,30 +647,26 @@ select_statement::execute(service::storage_proxy& proxy,
     // doing post-query ordering.
     auto timeout = db::timeout_clock::now() + options.get_timeout_config().*get_timeout_config_selector();
     if (needs_post_query_ordering() && _limit) {
-        return do_with(std::forward<dht::partition_range_vector>(partition_ranges), [this, &proxy, &state, &options, cmd, timeout](auto& prs) {
-            assert(cmd->partition_limit == query::max_partitions);
-            query::result_merger merger(cmd->row_limit * prs.size(), query::max_partitions);
-            return map_reduce(prs.begin(), prs.end(), [this, &proxy, &state, &options, cmd, timeout] (auto& pr) {
-                dht::partition_range_vector prange { pr };
-                auto command = ::make_lw_shared<query::read_command>(*cmd);
-                return proxy.query(_schema,
-                        command,
-                        std::move(prange),
-                        options.get_consistency(),
-                        {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()}).then([] (service::storage_proxy::coordinator_query_result qr) {
-                    return std::move(qr.query_result);
-                });
-            }, std::move(merger));
-        }).then([this, &options, now, cmd] (auto result) {
-            return this->process_results(std::move(result), cmd, options, now);
-        });
-    } else {
-        return proxy.query(_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()})
-            .then([this, &options, now, cmd] (service::storage_proxy::coordinator_query_result qr) {
-                return this->process_results(std::move(qr.query_result), cmd, options, now);
+        assert(cmd->partition_limit == query::max_partitions);
+        query::result_merger merger(cmd->row_limit * partition_ranges.size(), query::max_partitions);
+        auto result = co_await map_reduce(partition_ranges.begin(), partition_ranges.end(), [this, &proxy, &state, &options, cmd, timeout] (auto& pr) {
+            dht::partition_range_vector prange { pr };
+            auto command = ::make_lw_shared<query::read_command>(*cmd);
+            return proxy.query(_schema,
+                    command,
+                    std::move(prange),
+                    options.get_consistency(),
+                    {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()}).then([] (service::storage_proxy::coordinator_query_result qr) {
+                return std::move(qr.query_result);
             });
+        }, std::move(merger));
+        co_return co_await this->process_results(std::move(result), cmd, options, now);
+    } else {
+        auto qr = co_await proxy.query(_schema, cmd, std::move(partition_ranges), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()});
+        co_return co_await this->process_results(std::move(qr.query_result), cmd, options, now);
     }
 }
+
 
 future<shared_ptr<cql_transport::messages::result_message>>
 indexed_table_select_statement::process_base_query_results(
