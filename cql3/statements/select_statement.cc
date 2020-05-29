@@ -53,6 +53,7 @@
 #include "query_result_merger.hh"
 #include "service/pager/query_pagers.hh"
 #include <seastar/core/execution_stage.hh>
+#include <seastar/core/coroutine.hh>
 #include "view_info.hh"
 #include "partition_slice_builder.hh"
 #include "cql3/untyped_result_set.hh"
@@ -294,6 +295,68 @@ select_statement::execute(service::storage_proxy& proxy,
 }
 
 future<shared_ptr<cql_transport::messages::result_message>>
+select_statement::do_execute_coroutine(lw_shared_ptr<query::read_command>&& command,
+        dht::partition_range_vector&& key_ranges, bool aggregate, bool nonpaged_filtering,
+        bool restrictions_need_filtering, int32_t page_size, gc_clock::time_point now,
+        service::storage_proxy& proxy, service::query_state& state, const query_options& options) const {
+    command->slice.options.set<query::partition_slice::option::allow_short_read>();
+    auto timeout_duration = options.get_timeout_config().*get_timeout_config_selector();
+    auto p = service::pager::query_pagers::pager(_schema, _selection,
+            state, options, command, std::move(key_ranges), _stats, restrictions_need_filtering ? _restrictions : nullptr);
+
+    if (aggregate || nonpaged_filtering) {
+        cql3::selection::result_set_builder builder(*_selection, now, options.get_cql_serialization_format(), *_group_by_cell_indices);
+        while (!p->is_exhausted()) {
+            auto timeout = db::timeout_clock::now() + timeout_duration;
+            co_await p->fetch_page(builder, page_size, now, timeout);
+        }
+        co_return co_await builder.with_thread_if_needed([this, &builder, restrictions_need_filtering] {
+            auto rs = builder.build();
+            if (restrictions_need_filtering) {
+                _stats.filtered_rows_matched_total += rs->size();
+            }
+            update_stats_rows_read(rs->size());
+            auto msg = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
+            return shared_ptr<cql_transport::messages::result_message>(std::move(msg));
+        });
+    }
+
+    if (needs_post_query_ordering()) {
+        throw exceptions::invalid_request_exception(
+                "Cannot page queries with both ORDER BY and a IN restriction on the partition key;"
+                        " you must either remove the ORDER BY or the IN and sort client side, or disable paging for this query");
+    }
+
+    auto timeout = db::timeout_clock::now() + timeout_duration;
+    if (_selection->is_trivial() && !restrictions_need_filtering && !_per_partition_limit) {
+        auto generator = co_await p->fetch_page_generator(page_size, now, timeout, _stats);
+        auto meta = [&] () -> shared_ptr<const cql3::metadata> {
+            if (!p->is_exhausted()) {
+                auto meta = make_shared<metadata>(*_selection->get_result_metadata());
+                meta->set_paging_state(p->state());
+                return meta;
+            } else {
+                return _selection->get_result_metadata();
+            }
+        }();
+
+        co_return make_shared<cql_transport::messages::result_message::rows>(result(std::move(generator), std::move(meta)));
+    }
+
+    auto rs = co_await p->fetch_page(page_size, now, timeout);
+
+    if (!p->is_exhausted()) {
+        rs->get_metadata().set_paging_state(p->state());
+    }
+
+    if (restrictions_need_filtering) {
+        _stats.filtered_rows_matched_total += rs->size();
+    }
+    update_stats_rows_read(rs->size());
+    co_return ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
+}
+
+future<shared_ptr<cql_transport::messages::result_message>>
 select_statement::do_execute(service::storage_proxy& proxy,
                           service::query_state& state,
                           const query_options& options) const
@@ -346,8 +409,7 @@ select_statement::do_execute(service::storage_proxy& proxy,
         unsigned shard = dht::shard_of(*_schema, key_ranges[0].start()->value().as_decorated_key().token());
         if (this_shard_id() != shard) {
             proxy.get_stats().replica_cross_shard_ops++;
-            return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(
-                    make_shared<cql_transport::messages::result_message::bounce_to_shard>(shard));
+            return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(make_shared<cql_transport::messages::result_message::bounce_to_shard>(shard));
         }
     }
 
@@ -357,74 +419,8 @@ select_statement::do_execute(service::storage_proxy& proxy,
         return execute(proxy, command, std::move(key_ranges), state, options, now);
     }
 
-    command->slice.options.set<query::partition_slice::option::allow_short_read>();
-    auto timeout_duration = options.get_timeout_config().*get_timeout_config_selector();
-    auto p = service::pager::query_pagers::pager(_schema, _selection,
-            state, options, command, std::move(key_ranges), _stats, restrictions_need_filtering ? _restrictions : nullptr);
-
-    if (aggregate || nonpaged_filtering) {
-        return do_with(
-                cql3::selection::result_set_builder(*_selection, now,
-                        options.get_cql_serialization_format(), *_group_by_cell_indices),
-                [this, p, page_size, now, timeout_duration, restrictions_need_filtering](auto& builder) {
-                    return do_until([p] {return p->is_exhausted();},
-                            [p, &builder, page_size, now, timeout_duration] {
-                                auto timeout = db::timeout_clock::now() + timeout_duration;
-                                return p->fetch_page(builder, page_size, now, timeout);
-                            }
-                    ).then([this, &builder, restrictions_need_filtering] {
-                        return builder.with_thread_if_needed([this, &builder, restrictions_need_filtering] {
-                            auto rs = builder.build();
-                            if (restrictions_need_filtering) {
-                                _stats.filtered_rows_matched_total += rs->size();
-                            }
-                            update_stats_rows_read(rs->size());
-                            auto msg = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
-                            return shared_ptr<cql_transport::messages::result_message>(std::move(msg));
-                        });
-                    });
-                });
-    }
-
-    if (needs_post_query_ordering()) {
-        throw exceptions::invalid_request_exception(
-                "Cannot page queries with both ORDER BY and a IN restriction on the partition key;"
-                        " you must either remove the ORDER BY or the IN and sort client side, or disable paging for this query");
-    }
-
-    auto timeout = db::timeout_clock::now() + timeout_duration;
-    if (_selection->is_trivial() && !restrictions_need_filtering && !_per_partition_limit) {
-        return p->fetch_page_generator(page_size, now, timeout, _stats).then([this, p] (result_generator generator) {
-            auto meta = [&] () -> shared_ptr<const cql3::metadata> {
-                if (!p->is_exhausted()) {
-                    auto meta = make_shared<metadata>(*_selection->get_result_metadata());
-                    meta->set_paging_state(p->state());
-                    return meta;
-                } else {
-                    return _selection->get_result_metadata();
-                }
-            }();
-
-            return shared_ptr<cql_transport::messages::result_message>(
-                make_shared<cql_transport::messages::result_message::rows>(result(std::move(generator), std::move(meta)))
-            );
-        });
-    }
-
-    return p->fetch_page(page_size, now, timeout).then(
-            [this, p, &options, now, restrictions_need_filtering](std::unique_ptr<cql3::result_set> rs) {
-
-                if (!p->is_exhausted()) {
-                    rs->get_metadata().set_paging_state(p->state());
-                }
-
-                if (restrictions_need_filtering) {
-                    _stats.filtered_rows_matched_total += rs->size();
-                }
-                update_stats_rows_read(rs->size());
-                auto msg = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(rs)));
-                return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(std::move(msg));
-            });
+    return do_execute_coroutine(std::move(command), std::move(key_ranges), aggregate,
+            nonpaged_filtering, restrictions_need_filtering, page_size, now, proxy, state, options);
 }
 
 template<typename KeyType>
