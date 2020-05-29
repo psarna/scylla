@@ -501,53 +501,35 @@ indexed_table_select_statement::do_execute_base_query(
     auto timeout = db::timeout_clock::now() + options.get_timeout_config().*get_timeout_config_selector();
     uint32_t queried_ranges_count = partition_ranges.size();
     service::query_ranges_to_vnodes_generator ranges_to_vnodes(proxy.get_token_metadata(), _schema, std::move(partition_ranges));
+    size_t concurrency = 1; 
+    query::result_merger merger(cmd->row_limit * queried_ranges_count, query::max_partitions);
 
-    struct base_query_state {
-        query::result_merger merger;
-        service::query_ranges_to_vnodes_generator ranges_to_vnodes;
-        size_t concurrency = 1;
-        base_query_state(uint32_t row_limit, service::query_ranges_to_vnodes_generator&& ranges_to_vnodes_)
-                : merger(row_limit, query::max_partitions)
-                , ranges_to_vnodes(std::move(ranges_to_vnodes_))
-                {}
-        base_query_state(base_query_state&&) = default;
-        base_query_state(const base_query_state&) = delete;
-    };
-
-    base_query_state query_state{cmd->row_limit * queried_ranges_count, std::move(ranges_to_vnodes)};
-    return do_with(std::move(query_state), [this, &proxy, &state, &options, cmd, timeout] (auto&& query_state) {
-        auto& [merger, ranges_to_vnodes, concurrency] = query_state;
-        return repeat([this, &ranges_to_vnodes, &merger, &proxy, &state, &options, &concurrency, cmd, timeout]() {
-            // Starting with 1 range, we check if the result was a short read, and if not,
-            // we continue exponentially, asking for 2x more ranges than before
-            dht::partition_range_vector prange = ranges_to_vnodes(concurrency);
-            auto command = ::make_lw_shared<query::read_command>(*cmd);
-            auto old_paging_state = options.get_paging_state();
-            if (old_paging_state && concurrency == 1) {
-                auto base_pk = generate_base_key_from_index_pk<partition_key>(old_paging_state->get_partition_key(),
+    query::short_read short_read = query::short_read::no;
+    while (!short_read && !ranges_to_vnodes.empty()) {
+        // Starting with 1 range, we check if the result was a short read, and if not,
+        // we continue exponentially, asking for 2x more ranges than before
+        dht::partition_range_vector prange = ranges_to_vnodes(concurrency);
+        auto command = ::make_lw_shared<query::read_command>(*cmd);
+        auto old_paging_state = options.get_paging_state();
+        if (old_paging_state && concurrency == 1) { 
+            auto base_pk = generate_base_key_from_index_pk<partition_key>(old_paging_state->get_partition_key(),
+                    old_paging_state->get_clustering_key(), *_schema, *_view_schema);
+            if (old_paging_state->get_clustering_key() && _schema->clustering_key_size() > 0) { 
+                auto base_ck = generate_base_key_from_index_pk<clustering_key>(old_paging_state->get_partition_key(),
                         old_paging_state->get_clustering_key(), *_schema, *_view_schema);
-                if (old_paging_state->get_clustering_key() && _schema->clustering_key_size() > 0) {
-                    auto base_ck = generate_base_key_from_index_pk<clustering_key>(old_paging_state->get_partition_key(),
-                            old_paging_state->get_clustering_key(), *_schema, *_view_schema);
-                    command->slice.set_range(*_schema, base_pk,
-                            std::vector<query::clustering_range>{query::clustering_range::make_starting_with(range_bound<clustering_key>(base_ck, false))});
-                } else {
-                    command->slice.set_range(*_schema, base_pk, std::vector<query::clustering_range>{query::clustering_range::make_open_ended_both_sides()});
-                }
+                command->slice.set_range(*_schema, base_pk,
+                        std::vector<query::clustering_range>{query::clustering_range::make_starting_with(range_bound<clustering_key>(base_ck, false))});
+            } else {
+                command->slice.set_range(*_schema, base_pk, std::vector<query::clustering_range>{query::clustering_range::make_open_ended_both_sides()});
             }
-            concurrency *= 2;
-            return proxy.query(_schema, command, std::move(prange), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()})
-            .then([&ranges_to_vnodes, &merger] (service::storage_proxy::coordinator_query_result qr) {
-                bool is_short_read = qr.query_result->is_short_read();
-                merger(std::move(qr.query_result));
-                return stop_iteration(is_short_read || ranges_to_vnodes.empty());
-            });
-        }).then([&merger]() {
-            return merger.get();
-        });
-    }).then([cmd] (foreign_ptr<lw_shared_ptr<query::result>> result) mutable {
-        return make_ready_future<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>(std::move(result), std::move(cmd));
-    });
+        }
+        concurrency *= 2;
+        auto qr = co_await proxy.query(_schema, command, std::move(prange), options.get_consistency(), {timeout, state.get_permit(), state.get_client_state(), state.get_trace_state()});
+        short_read = qr.query_result->is_short_read();
+        merger(std::move(qr.query_result));
+    }    
+
+    co_return std::make_tuple(merger.get(), std::move(cmd));
 }
 
 future<shared_ptr<cql_transport::messages::result_message>>
