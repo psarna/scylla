@@ -39,23 +39,28 @@ uint64_t from_varint_to_integer(const utils::multiprecision_int& varint) {
 
 big_decimal::big_decimal(sstring_view text)
 {
-    std::string str(text);
-    static const std::regex big_decimal_re("^([\\+\\-]?)([0-9]*)(\\.([0-9]*))?([eE]([\\+\\-]?[0-9]+))?");
-    std::smatch sm;
-    if (!std::regex_match(str, sm, big_decimal_re)) {
-        throw marshal_exception(format("big_decimal contains invalid characters: '{}'", str));
+    if (text.empty()) {
+        _scale = 0;
+       _unscaled_value = 0;
+        return;
     }
-    bool negative = sm[1] == "-";
-    auto integer = sm[2].str();
-    auto fraction = sm[4].str();
-    auto exponent = sm[6].str();
-    if (integer.empty() && fraction.empty()) {
-        throw marshal_exception(format("big_decimal - both integer and fraction are empty: '{}'", str));
+    size_t e_pos = text.find_first_of("eE");
+    std::string_view base = text.substr(0, e_pos);
+    std::string_view exponent;
+    if (e_pos != std::string_view::npos && e_pos < text.size() - 1) {
+        exponent = text.substr(e_pos + 1);
     }
-    integer.append(fraction);
-    unsigned i;
-    for (i = 0; i < integer.size() - 1 && integer[i] == '0'; i++);
-    integer = integer.substr(i);
+    size_t dot_pos = base.find_first_of(".");
+    std::string integer_str(base.substr(0, dot_pos));
+    std::string_view fraction;
+    if (dot_pos != std::string_view::npos && dot_pos < base.size() - 1) {
+        fraction = base.substr(dot_pos + 1);
+    }
+    integer_str.append(fraction);
+    std::string_view integer(integer_str);
+    const bool negative = integer.front() == '-';
+    integer.remove_prefix(negative);
+    integer.remove_prefix(std::min(integer.find_first_not_of("0"), integer.size() - 1));
 
     _unscaled_value = boost::multiprecision::cpp_int(integer);
     if (negative) {
