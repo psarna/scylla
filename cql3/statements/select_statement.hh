@@ -99,6 +99,10 @@ protected:
 protected :
     virtual future<::shared_ptr<cql_transport::messages::result_message>> do_execute(service::storage_proxy& proxy,
         service::query_state& state, const query_options& options) const;
+    future<::shared_ptr<cql_transport::messages::result_message>> do_execute_coroutine(lw_shared_ptr<query::read_command>&& command,
+        dht::partition_range_vector&& key_ranges, bool aggregate, bool nonpaged_filtering,
+        bool restrictions_need_filtering, int32_t page_size, gc_clock::time_point now,
+        service::storage_proxy& proxy, service::query_state& state, const query_options& options) const;
     friend class select_statement_executor;
 public:
     select_statement(schema_ptr schema,
