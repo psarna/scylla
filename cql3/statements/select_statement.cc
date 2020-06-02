@@ -403,8 +403,8 @@ select_statement::do_execute(service::storage_proxy& proxy,
 
     if (db::is_serial_consistency(options.get_consistency())) {
         if (key_ranges.size() != 1 || !query::is_single_partition(key_ranges.front())) {
-             throw exceptions::invalid_request_exception(
-                     "SERIAL/LOCAL_SERIAL consistency may only be requested for one partition at a time");
+             return make_exception_future<shared_ptr<cql_transport::messages::result_message>>(exceptions::invalid_request_exception(
+                     "SERIAL/LOCAL_SERIAL consistency may only be requested for one partition at a time"));
         }
         unsigned shard = dht::shard_of(*_schema, key_ranges[0].start()->value().as_decorated_key().token());
         if (this_shard_id() != shard) {
