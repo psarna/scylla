@@ -166,6 +166,26 @@ struct single_value_comp {
     bool operator()(const rjson::value& r1, const rjson::value& r2) const;
 };
 
+// Helper function for parsing a JSON straight into a map
+// of strings representing their values - useful for various
+// database helper functions.
+template<typename Map>
+Map parse_to_map(std::string_view raw) {
+    Map map;
+    rjson::value root = rjson::parse(raw);
+    if (!root.IsObject()) {
+        throw rjson::error("Only json objects can be transformed to maps");
+    }
+    for (auto it = root.MemberBegin(); it != root.MemberEnd(); ++it) {
+        if (it->value.IsString()) {
+            map.emplace(sstring(rjson::to_string_view(it->name)), sstring(rjson::to_string_view(it->value)));
+        } else {
+            map.emplace(sstring(rjson::to_string_view(it->name)), sstring(rjson::print(it->value)));
+        }
+    }
+    return map;
+}
+
 } // end namespace rjson
 
 namespace std {
