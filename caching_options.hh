@@ -23,7 +23,7 @@
 #include <seastar/core/sstring.hh>
 #include <boost/lexical_cast.hpp>
 #include "exceptions/exceptions.hh"
-#include "json.hh"
+#include "utils/rjson.hh"
 #include "seastarx.hh"
 
 class schema;
@@ -66,6 +66,16 @@ public:
         return _enabled;
     }
 
+    rjson::value to_json() const {
+        rjson::value v = rjson::empty_object();
+        rjson::set_with_string_name(v, "keys", rjson::from_string(_key_cache));
+        rjson::set_with_string_name(v, "rows_per_partition", rjson::from_string(_row_cache));
+        if (!_enabled) {
+            rjson::set_with_string_name(v, "enabled", rjson::from_string("false"));
+        }
+        return v;
+    }
+
     std::map<sstring, sstring> to_map() const {
         std::map<sstring, sstring> res = {{ "keys", _key_cache },
                 { "rows_per_partition", _row_cache }};
@@ -74,9 +84,8 @@ public:
         }
         return res;
     }
-
     sstring to_sstring() const {
-        return json::to_json(to_map());
+        return rjson::print(to_json());
     }
 
     static caching_options get_disabled_caching_options() {
@@ -97,13 +106,14 @@ public:
             } else if (p.first == "enabled") {
                 e = p.second == "true";
             } else {
-                throw exceptions::configuration_exception("Invalid caching option: " + p.first);
+                throw exceptions::configuration_exception(format("Invalid caching option: {}", p.first));
             }
         }
         return caching_options(k, r, e);
     }
+
     static caching_options from_sstring(const sstring& str) {
-        return from_map(json::to_map(str));
+        return from_map(rjson::parse_to_map<std::map<sstring, sstring>>(str));
     }
 
     bool operator==(const caching_options& other) const {
