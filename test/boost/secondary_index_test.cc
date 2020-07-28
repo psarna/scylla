@@ -29,6 +29,7 @@
 #include "types/set.hh"
 #include "test/lib/exception_utils.hh"
 #include "cql3/statements/select_statement.hh"
+#include "utils/error_injection.hh"
 
 using namespace std::chrono_literals;
 
@@ -1312,7 +1313,7 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
         });
 
         // Ghost row deletion is attempted for a single view partition
-        cquery_nofail(e, "DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE v = 9");
+        cquery_nofail(e, "PRUNE MATERIALIZED VIEW tv WHERE v = 9");
         eventually([&] {
             // The ghost row is deleted
             auto msg = cquery_nofail(e, "SELECT * FROM tv where v = 9;");
@@ -1328,7 +1329,7 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
         });
 
         // Ghost row deletion is attempted for the whole table
-        cquery_nofail(e, "DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv;");
+        cquery_nofail(e, "PRUNE MATERIALIZED VIEW tv;");
         eventually([&] {
             // Ghost rows are deleted
             auto msg = cquery_nofail(e, "SELECT * FROM tv;");
@@ -1349,11 +1350,11 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
 
         // Ghost row deletion is attempted with a parallelized table scan
         when_all(
-            e.execute_cql("DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE token(v) >= -9223372036854775807 AND token(v) <= 0"),
-            e.execute_cql("DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE token(v) > 0 AND token(v) <= 10000000"),
-            e.execute_cql("DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE token(v) > 10000000 AND token(v) <= 20000000"),
-            e.execute_cql("DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE token(v) > 20000000 AND token(v) <= 30000000"),
-            e.execute_cql("DELETE IF NOT EXISTS FROM MATERIALIZED VIEW tv WHERE token(v) > 30000000 AND token(v) <= 9223372036854775807")
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) >= -9223372036854775807 AND token(v) <= 0"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 0 AND token(v) <= 10000000"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 10000000 AND token(v) <= 20000000"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 20000000 AND token(v) <= 30000000"),
+            e.execute_cql("PRUNE MATERIALIZED VIEW tv WHERE token(v) > 30000000 AND token(v) <= 9223372036854775807")
         ).get();
         eventually([&] {
             // Ghost rows are deleted
@@ -1364,5 +1365,19 @@ SEASTAR_TEST_CASE(test_deleting_ghost_rows) {
                 {int32_type->decompose(6), int32_type->decompose(2), int32_type->decompose(4)}
             });
         });
+    });
+}
+
+SEASTAR_TEST_CASE(test_returning_failure_from_ghost_rows_deletion) {
+    return do_with_cql_env_thread([] (auto& e) {
+        cquery_nofail(e, "CREATE TABLE t (p int, c int, v int, PRIMARY KEY (p, c))");
+        cquery_nofail(e, "CREATE MATERIALIZED VIEW tv AS SELECT v, p, c FROM t WHERE v IS NOT NULL AND c IS NOT NULL PRIMARY KEY (v, p, c);");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (1,1,1)");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (1,2,3)");
+        cquery_nofail(e, "INSERT INTO t (p,c,v) VALUES (2,4,6)");
+        utils::get_local_injector().enable("storage_proxy_query_failure", true);
+        // Test that when a single query to the base table fails, it is propagated
+        // to the user
+        BOOST_REQUIRE_THROW(e.execute_cql("PRUNE MATERIALIZED VIEW tv").get0(), std::runtime_error);
     });
 }

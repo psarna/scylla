@@ -93,6 +93,7 @@
 #include "utils/histogram_metrics_helper.hh"
 #include "service/paxos/prepare_summary.hh"
 #include "service/paxos/proposal.hh"
+#include "utils/error_injection.hh"
 
 namespace bi = boost::intrusive;
 
@@ -4214,6 +4215,7 @@ storage_proxy::query(schema_ptr s,
     db::consistency_level cl,
     storage_proxy::coordinator_query_options query_options)
 {
+    utils::get_local_injector().inject("storage_proxy_query_failure", [] { throw std::runtime_error("Error injection: failing a query"); });
     if (slogger.is_enabled(logging::log_level::trace) || qlogger.is_enabled(logging::log_level::trace)) {
         static thread_local int next_id = 0;
         auto query_id = next_id++;
