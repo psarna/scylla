@@ -2750,6 +2750,7 @@ protected:
     timer<storage_proxy::clock_type> _timeout;
     schema_ptr _schema;
     size_t _failed = 0;
+    std::exception_ptr _overloaded = nullptr;
 
     virtual void on_failure(std::exception_ptr ex) = 0;
     virtual void on_timeout() = 0;
@@ -2787,6 +2788,8 @@ public:
         } catch (rpc::timeout_error&) {
             // do not report timeouts, the whole operation will timeout and be reported
             return; // also do not report timeout as replica failure for the same reason
+        } catch (const exceptions::overloaded_exception& e) {
+            _overloaded = std::make_exception_ptr(overloaded_exception(format("Endpoint {} is overloaded ({}.{})", ep, _schema->ks_name(), _schema->cf_name())));
         } catch(...) {
             slogger.error("Exception when communicating with {}, to read from {}.{}: {}", ep, _schema->ks_name(), _schema->cf_name(), eptr);
         }
@@ -2884,7 +2887,11 @@ public:
             return;
         }
         if (_block_for + _failed > _target_count_for_cl) {
-            fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, _cl_responses, _failed, _block_for, _data_result)));
+            if (_overloaded) {
+                fail_request(_overloaded);
+            } else {
+                fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, _cl_responses, _failed, _block_for, _data_result)));
+            }
         }
     }
     future<digest_read_result> has_cl() {
@@ -3186,7 +3193,11 @@ public:
         }
     }
     void on_error(gms::inet_address ep, bool disconnect) override {
-        fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, response_count(), 1, _targets_count, response_count() != 0)));
+        if (_overloaded) {
+            fail_request(_overloaded);
+        } else {
+            fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, response_count(), 1, _targets_count, response_count() != 0)));
+        }
     }
     uint32_t max_live_count() const {
         return _max_live_count;
