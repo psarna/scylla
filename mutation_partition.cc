@@ -773,6 +773,38 @@ void appending_hash<row>::operator()(Hasher& h, const row& cells, const schema& 
     }
 }
 
+template<>
+void appending_hash<row>::operator()<xx_hasher_with_null_digest>(xx_hasher_with_null_digest& h, const row& cells, const schema& s, column_kind kind, const query::column_id_vector& columns, max_timestamp& max_ts) const {
+    for (auto id : columns) {
+        const cell_and_hash* cell_and_hash = cells.find_cell_and_hash(id);
+        if (!cell_and_hash) {
+            feed_hash(h, xx_hasher_with_null_digest::null_hash_value);
+            continue;
+        }
+        auto&& def = s.column_at(kind, id);
+        if (def.is_atomic()) {
+            max_ts.update(cell_and_hash->cell.as_atomic_cell(def).timestamp());
+            if (cell_and_hash->hash) {
+                feed_hash(h, *cell_and_hash->hash);
+            } else {
+                query::default_hasher cellh;
+                feed_hash(cellh, cell_and_hash->cell.as_atomic_cell(def), def);
+                feed_hash(h, cellh.finalize_uint64());
+            }
+        } else {
+            auto cm = cell_and_hash->cell.as_collection_mutation();
+            max_ts.update(cm.last_update(*def.type));
+            if (cell_and_hash->hash) {
+                feed_hash(h, *cell_and_hash->hash);
+            } else {
+                query::default_hasher cellh;
+                feed_hash(cellh, cm, def);
+                feed_hash(h, cellh.finalize_uint64());
+            }
+        }
+    }
+}
+
 cell_hash_opt row::cell_hash_for(column_id id) const {
     if (_type == storage_type::vector) {
         return id < max_vector_size && _storage.vector.present.test(id) ? _storage.vector.v[id].hash : cell_hash_opt();

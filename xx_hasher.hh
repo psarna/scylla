@@ -67,3 +67,11 @@ private:
         serialize_int64(out, finalize_uint64());
     }
 };
+
+// Used to specialize templates in order to fix a bug
+// in handling null values: #4567
+class xx_hasher_with_null_digest : public xx_hasher {
+public:
+    explicit xx_hasher_with_null_digest(uint64_t seed = 0) noexcept : xx_hasher(seed) {}
+    static constexpr int null_hash_value = 0xbeefcafe;
+};
