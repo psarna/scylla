@@ -23,6 +23,8 @@
 
 #include <cstddef>
 #include <limits>
+#include <chrono>
+#include <seastar/core/lowres_clock.hh>
 
 namespace utils {
 
@@ -34,6 +36,9 @@ namespace utils {
  * to its maximum size.
  */
 struct backlog {
+    static constexpr size_t delay_limit_us = 1000000;
+    using clock_type = seastar::lowres_clock;
+
     size_t current;
     size_t max;
 
@@ -68,6 +73,9 @@ struct backlog {
     static backlog no_backlog() {
         return backlog{0, std::numeric_limits<size_t>::max()};
     }
+
+    // Calculates how much to delay completing the request. The delay adds to the request's inherent latency.
+    std::chrono::microseconds calculate_delay(clock_type::duration budget);
 };
 
 }
