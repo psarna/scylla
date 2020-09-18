@@ -19,11 +19,9 @@
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-namespace db {
-namespace view {
-class update_backlog {
+namespace utils {
+class backlog {
     size_t current;
     size_t max;
 };
-}
 }

@@ -60,6 +60,7 @@ namespace gms {
 
 namespace utils {
     class UUID;
+    class backlog;
 }
 
 namespace db {
@@ -67,7 +68,7 @@ class seed_provider_type;
 }
 
 namespace db::view {
-class update_backlog;
+using update_backlog = utils::backlog;
 }
 
 class frozen_mutation;

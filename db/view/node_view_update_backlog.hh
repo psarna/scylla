@@ -40,7 +40,7 @@ class node_update_backlog {
     using clock = seastar::lowres_clock;
     struct per_shard_backlog {
         // Multiply by 2 to defeat the prefetcher
-        alignas(seastar::cache_line_size * 2) std::atomic<update_backlog> backlog = update_backlog::no_backlog();
+        alignas(seastar::cache_line_size * 2) std::atomic<update_backlog> backlog{update_backlog::no_backlog()};
 
         update_backlog load() const {
             return backlog.load(std::memory_order_relaxed);
