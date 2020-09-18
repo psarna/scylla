@@ -37,7 +37,7 @@ namespace utils {
  */
 struct backlog {
     static constexpr size_t delay_limit_us = 1000000;
-    using clock_type = seastar::lowres_clock;
+    using budget_clock_type = seastar::lowres_clock;
 
     size_t current;
     size_t max;
@@ -75,7 +75,8 @@ struct backlog {
     }
 
     // Calculates how much to delay completing the request. The delay adds to the request's inherent latency.
-    std::chrono::microseconds calculate_delay(clock_type::duration budget);
+    std::chrono::microseconds calculate_delay(budget_clock_type::duration budget);
+    std::chrono::microseconds calculate_delay();
 };
 
 }

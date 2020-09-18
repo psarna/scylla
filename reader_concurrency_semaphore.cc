@@ -21,10 +21,12 @@
 
 #include <seastar/core/seastar.hh>
 #include <seastar/core/print.hh>
+#include <seastar/core/sleep.hh>
 
 #include "reader_concurrency_semaphore.hh"
 #include "utils/exceptions.hh"
-
+#include "utils/backlog.hh"
+#include "log.hh"
 
 reader_permit::resource_units::resource_units(reader_concurrency_semaphore& semaphore, reader_resources res) noexcept
         : _semaphore(&semaphore), _resources(res) {
@@ -150,13 +152,18 @@ bool reader_concurrency_semaphore::try_evict_one_inactive_read() {
 }
 
 future<reader_permit::resource_units> reader_concurrency_semaphore::do_wait_admission(size_t memory, db::timeout_clock::time_point timeout) {
-    if (_wait_list.size() >= _max_queue_length) {
+    utils::backlog backlog(std::max(0UL, _wait_list.size() - _queue_length_throttling_threshold), _max_queue_length - _queue_length_throttling_threshold);
+    if (_wait_list.size() >= _queue_length_throttling_threshold) {
         if (_prethrow_action) {
             _prethrow_action();
         }
-        return make_exception_future<reader_permit::resource_units>(
-                std::make_exception_ptr(std::runtime_error(
-                        format("{}: restricted mutation reader queue overload", _name))));
+        static logging::logger srn("SARNA");
+        srn.warn("Delaying for {}us", backlog.calculate_delay().count());
+        return seastar::sleep(backlog.calculate_delay()).then([this] {
+            return make_exception_future<reader_permit::resource_units>(
+                    std::make_exception_ptr(std::runtime_error(
+                            format("{}: restricted mutation reader queue overload", _name))));
+        });
     }
     auto r = resources(1, static_cast<ssize_t>(memory));
     auto it = _inactive_reads.begin();

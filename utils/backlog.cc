@@ -24,19 +24,24 @@
 
 namespace utils {
 
-std::chrono::microseconds backlog::calculate_delay(clock_type::duration budget) {
+std::chrono::microseconds backlog::calculate_delay(budget_clock_type::duration budget) {
     auto adjust = [] (float x) { return x * x * x; };
     std::chrono::microseconds ret(uint32_t(adjust(relative_size()) * delay_limit_us));
     // "budget" has millisecond resolution and can potentially be long
     // in the future so converting it to microseconds may overflow.
     // So to compare buget and ret we need to convert both to the lower
     // resolution.
-    if (std::chrono::duration_cast<clock_type::duration>(ret) < budget) {
+    if (std::chrono::duration_cast<budget_clock_type::duration>(ret) < budget) {
         return ret;
     } else {
         // budget is small (< ret) so can be converted to microseconds
         return budget;
     }
+}
+
+std::chrono::microseconds backlog::calculate_delay() {
+    return calculate_delay(std::chrono::duration_cast<budget_clock_type::duration>(
+            std::chrono::microseconds(delay_limit_us)));
 }
 
 }

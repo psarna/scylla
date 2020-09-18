@@ -114,6 +114,7 @@ private:
 
     sstring _name;
     size_t _max_queue_length = std::numeric_limits<size_t>::max();
+    size_t _queue_length_throttling_threshold = std::numeric_limits<size_t>::max();
     std::function<void()> _prethrow_action;
     uint64_t _next_id = 1;
     std::map<uint64_t, std::unique_ptr<inactive_read>> _inactive_reads;
@@ -143,6 +144,7 @@ public:
         , _wait_list(expiry_handler(name))
         , _name(std::move(name))
         , _max_queue_length(max_queue_length)
+        , _queue_length_throttling_threshold(_max_queue_length / 2)
         , _prethrow_action(std::move(prethrow_action)) {}
 
     /// Create a semaphore with practically unlimited count and memory.
