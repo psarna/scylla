@@ -141,6 +141,9 @@ public:
     future<> listen(socket_address addr, std::shared_ptr<seastar::tls::credentials_builder> = {}, bool is_shard_aware = false, bool keepalive = false);
     future<> do_accepts(int which, bool keepalive, socket_address server_addr);
     future<> stop();
+    void set_max_concurrent_requests(size_t limit) {
+        _config.max_concurrent_requests = limit;
+    }
 public:
     using response = cql_transport::response;
 private:

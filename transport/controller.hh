@@ -24,6 +24,7 @@
 #include <seastar/core/semaphore.hh>
 #include <seastar/core/distributed.hh>
 #include <seastar/core/future.hh>
+#include <any>
 
 using namespace seastar;
 
@@ -44,6 +45,7 @@ class controller {
     sharded<auth::service>& _auth_service;
     sharded<service::migration_notifier>& _mnotifier;
     gms::gossiper& _gossiper;
+    sharded<std::vector<std::any>> _observers;
 
     future<> set_cql_ready(bool ready);
     future<> do_start_server();
