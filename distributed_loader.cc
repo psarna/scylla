@@ -38,6 +38,7 @@
 #include <unordered_map>
 #include <boost/range/adaptor/map.hpp>
 #include "db/view/view_update_generator.hh"
+#include <seastar/core/coroutine.hh>
 
 extern logging::logger dblog;
 
@@ -203,29 +204,27 @@ struct reshard_shard_descriptor {
 // manipulate it in a do_for_each loop (which yields) instead of using standard accumulators.
 future<sstables::sstable_directory::sstable_info_vector>
 collect_all_shared_sstables(sharded<sstables::sstable_directory>& dir) {
-    return do_with(sstables::sstable_directory::sstable_info_vector(), [&dir] (sstables::sstable_directory::sstable_info_vector& info_vec) {
-        // We want to make sure that each distributed object reshards about the same amount of data.
-        // Each sharded object has its own shared SSTables. We can use a clever algorithm in which they
-        // all distributely figure out which SSTables to exchange, but we'll keep it simple and move all
-        // their foreign_sstable_open_info to a coordinator (the shard who called this function). We can
-        // move in bulk and that's efficient. That shard can then distribute the work among all the
-        // others who will reshard.
-        auto coordinator = this_shard_id();
-        // We will first move all of the foreign open info to temporary storage so that we can sort
-        // them. We want to distribute bigger sstables first.
-        return dir.invoke_on_all([&info_vec, coordinator] (sstables::sstable_directory& d) {
-            return smp::submit_to(coordinator, [&info_vec, info = d.retrieve_shared_sstables()] () mutable {
-                // We want do_for_each here instead of a loop to avoid stalls. Resharding can be
-                // called during node operations too. For example, if it is called to load new
-                // SSTables into the system.
-                return do_for_each(info, [&info_vec] (sstables::foreign_sstable_open_info& info) {
-                    info_vec.push_back(std::move(info));
-                });
+    sstables::sstable_directory::sstable_info_vector info_vec;
+    // We want to make sure that each distributed object reshards about the same amount of data.
+    // Each sharded object has its own shared SSTables. We can use a clever algorithm in which they
+    // all distributely figure out which SSTables to exchange, but we'll keep it simple and move all
+    // their foreign_sstable_open_info to a coordinator (the shard who called this function). We can
+    // move in bulk and that's efficient. That shard can then distribute the work among all the
+    // others who will reshard.
+    auto coordinator = this_shard_id();
+    // We will first move all of the foreign open info to temporary storage so that we can sort
+    // them. We want to distribute bigger sstables first.
+    co_await dir.invoke_on_all([&info_vec, coordinator] (sstables::sstable_directory& d) {
+        return smp::submit_to(coordinator, [&info_vec, info = d.retrieve_shared_sstables()] () mutable {
+            // We want do_for_each here instead of a loop to avoid stalls. Resharding can be
+            // called during node operations too. For example, if it is called to load new
+            // SSTables into the system.
+            return do_for_each(info, [&info_vec] (sstables::foreign_sstable_open_info& info) {
+                info_vec.push_back(std::move(info));
             });
-        }).then([&info_vec] () mutable {
-            return make_ready_future<sstables::sstable_directory::sstable_info_vector>(std::move(info_vec));
         });
     });
+    co_return info_vec;
 }
 
 // Given a vector of shared sstables to be resharded, distribute it among all shards.
@@ -234,20 +233,17 @@ collect_all_shared_sstables(sharded<sstables::sstable_directory>& dir) {
 // Returns a reshard_shard_descriptor per shard indicating the work that each shard has to do.
 future<std::vector<reshard_shard_descriptor>>
 distribute_reshard_jobs(sstables::sstable_directory::sstable_info_vector source) {
-    return do_with(std::move(source), std::vector<reshard_shard_descriptor>(smp::count),
-            [] (sstables::sstable_directory::sstable_info_vector& source, std::vector<reshard_shard_descriptor>& destinations) mutable {
-        std::sort(source.begin(), source.end(), [] (const sstables::foreign_sstable_open_info& a, const sstables::foreign_sstable_open_info& b) {
-            // Sort on descending SSTable sizes.
-            return a.uncompressed_data_size > b.uncompressed_data_size;
-        });
-        return do_for_each(source, [&destinations] (sstables::foreign_sstable_open_info& info) mutable {
-            auto shard_it = boost::min_element(destinations, std::mem_fn(&reshard_shard_descriptor::total_size_smaller));
-            shard_it->uncompressed_data_size += info.uncompressed_data_size;
-            shard_it->info_vec.push_back(std::move(info));
-        }).then([&destinations] () mutable {
-            return make_ready_future<std::vector<reshard_shard_descriptor>>(std::move(destinations));
-        });
+    std::vector<reshard_shard_descriptor> destinations(smp::count);
+    std::sort(source.begin(), source.end(), [] (const sstables::foreign_sstable_open_info& a, const sstables::foreign_sstable_open_info& b) {
+        // Sort on descending SSTable sizes.
+        return a.uncompressed_data_size > b.uncompressed_data_size;
     });
+    co_await do_for_each(source, [&destinations] (sstables::foreign_sstable_open_info& info) mutable {
+        auto shard_it = boost::min_element(destinations, std::mem_fn(&reshard_shard_descriptor::total_size_smaller));
+        shard_it->uncompressed_data_size += info.uncompressed_data_size;
+        shard_it->info_vec.push_back(std::move(info));
+    });
+    co_return destinations;
 }
 
 future<> run_resharding_jobs(sharded<sstables::sstable_directory>& dir, std::vector<reshard_shard_descriptor> reshard_jobs,
@@ -255,28 +251,25 @@ future<> run_resharding_jobs(sharded<sstables::sstable_directory>& dir, std::vec
 
     uint64_t total_size = boost::accumulate(reshard_jobs | boost::adaptors::transformed(std::mem_fn(&reshard_shard_descriptor::size)), uint64_t(0));
     if (total_size == 0) {
-        return make_ready_future<>();
+        co_return;
     }
 
-    return do_with(std::move(reshard_jobs), [&dir, &db, ks_name, table_name, creator = std::move(creator), total_size] (std::vector<reshard_shard_descriptor>& reshard_jobs) {
-        auto start = std::chrono::steady_clock::now();
-        dblog.info("{}", fmt::format("Resharding {} ", sstables::pretty_printed_data_size(total_size)));
+    auto start = std::chrono::steady_clock::now();
+    dblog.info("{}", fmt::format("Resharding {} ", sstables::pretty_printed_data_size(total_size)));
 
-        return dir.invoke_on_all([&dir, &db, &reshard_jobs, ks_name, table_name, creator] (sstables::sstable_directory& d) mutable {
-            auto& table = db.local().find_column_family(ks_name, table_name);
-            auto info_vec = std::move(reshard_jobs[this_shard_id()].info_vec);
-            auto& cm = table.get_compaction_manager();
-            auto max_threshold = table.schema()->max_compaction_threshold();
-            auto& iop = service::get_local_streaming_priority();
-            return d.reshard(std::move(info_vec), cm, table, max_threshold, creator, iop).then([&d, &dir] {
-                return d.move_foreign_sstables(dir);
-            });
-        }).then([start, total_size] {
-            auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start);
-            dblog.info("{}", fmt::format("Resharded {} in {:.2f} seconds, {}", sstables::pretty_printed_data_size(total_size), duration.count(), sstables::pretty_printed_throughput(total_size, duration)));
-            return make_ready_future<>();
+    co_await dir.invoke_on_all([&dir, &db, &reshard_jobs, ks_name, table_name, creator] (sstables::sstable_directory& d) mutable {
+        auto& table = db.local().find_column_family(ks_name, table_name);
+        auto info_vec = std::move(reshard_jobs[this_shard_id()].info_vec);
+        auto& cm = table.get_compaction_manager();
+        auto max_threshold = table.schema()->max_compaction_threshold();
+        auto& iop = service::get_local_streaming_priority();
+        return d.reshard(std::move(info_vec), cm, table, max_threshold, creator, iop).then([&d, &dir] {
+            return d.move_foreign_sstables(dir);
         });
     });
+
+    auto duration = std::chrono::duration_cast<std::chrono::duration<float>>(std::chrono::steady_clock::now() - start);
+    dblog.info("{}", fmt::format("Resharded {} in {:.2f} seconds, {}", sstables::pretty_printed_data_size(total_size), duration.count(), sstables::pretty_printed_throughput(total_size, duration)));
 }
 
 // Global resharding function. Done in two parts:
@@ -286,11 +279,9 @@ future<> run_resharding_jobs(sharded<sstables::sstable_directory>& dir, std::vec
 //    assigned.
 future<>
 distributed_loader::reshard(sharded<sstables::sstable_directory>& dir, sharded<database>& db, sstring ks_name, sstring table_name, sstables::compaction_sstable_creator_fn creator) {
-    return collect_all_shared_sstables(dir).then([] (sstables::sstable_directory::sstable_info_vector all_jobs) mutable {
-        return distribute_reshard_jobs(std::move(all_jobs));
-    }).then([&dir, &db, ks_name, table_name, creator = std::move(creator)] (std::vector<reshard_shard_descriptor> destinations) mutable {
-        return run_resharding_jobs(dir, std::move(destinations), db, ks_name, table_name, std::move(creator));
-    });
+    sstables::sstable_directory::sstable_info_vector all_jobs = co_await collect_all_shared_sstables(dir);
+    std::vector<reshard_shard_descriptor> destinations = co_await distribute_reshard_jobs(std::move(all_jobs));
+    co_await run_resharding_jobs(dir, std::move(destinations), db, ks_name, table_name, std::move(creator));
 }
 
 future<int64_t>
