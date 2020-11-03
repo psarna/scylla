@@ -465,48 +465,44 @@ static future<> execute_futures(std::vector<future<>>& futures) {
 }
 
 future<> distributed_loader::cleanup_column_family_temp_sst_dirs(sstring sstdir) {
-    return do_with(std::vector<future<>>(), [sstdir = std::move(sstdir)] (std::vector<future<>>& futures) {
-        return lister::scan_dir(sstdir, { directory_entry_type::directory }, [&futures] (fs::path sstdir, directory_entry de) {
-            // push futures that remove files/directories into an array of futures,
-            // so that the supplied callback will not block scan_dir() from
-            // reading the next entry in the directory.
-            fs::path dirpath = sstdir / de.name;
-            if (sstables::sstable::is_temp_dir(dirpath)) {
-                dblog.info("Found temporary sstable directory: {}, removing", dirpath);
-                futures.push_back(io_check([dirpath = std::move(dirpath)] () { return lister::rmdir(dirpath); }));
-            }
-            return make_ready_future<>();
-        }).then([&futures] {
-            return execute_futures(futures);
-        });
+    std::vector<future<>> futures;
+    co_await lister::scan_dir(sstdir, { directory_entry_type::directory }, [&futures] (fs::path sstdir, directory_entry de) {
+        // push futures that remove files/directories into an array of futures,
+        // so that the supplied callback will not block scan_dir() from
+        // reading the next entry in the directory.
+        fs::path dirpath = sstdir / de.name;
+        if (sstables::sstable::is_temp_dir(dirpath)) {
+            dblog.info("Found temporary sstable directory: {}, removing", dirpath);
+            futures.push_back(io_check([dirpath = std::move(dirpath)] () { return lister::rmdir(dirpath); }));
+        }
+        return make_ready_future<>();
     });
+    co_await execute_futures(futures);
 }
 
 future<> distributed_loader::handle_sstables_pending_delete(sstring pending_delete_dir) {
-    return do_with(std::vector<future<>>(), [dir = std::move(pending_delete_dir)] (std::vector<future<>>& futures) {
-        return lister::scan_dir(dir, { directory_entry_type::regular }, [&futures] (fs::path dir, directory_entry de) {
-            // push nested futures that remove files/directories into an array of futures,
-            // so that the supplied callback will not block scan_dir() from
-            // reading the next entry in the directory.
-            fs::path file_path = dir / de.name;
-            if (file_path.extension() == ".tmp") {
-                dblog.info("Found temporary pending_delete log file: {}, deleting", file_path);
-                futures.push_back(remove_file(file_path.string()));
-            } else if (file_path.extension() == ".log") {
-                dblog.info("Found pending_delete log file: {}, replaying", file_path);
-                auto f = sstables::replay_pending_delete_log(file_path.string()).then([file_path = std::move(file_path)] {
-                    dblog.debug("Replayed {}, removing", file_path);
-                    return remove_file(file_path.string());
-                });
-                futures.push_back(std::move(f));
-            } else {
-                dblog.debug("Found unknown file in pending_delete directory: {}, ignoring", file_path);
-            }
-            return make_ready_future<>();
-        }).then([&futures] {
-            return execute_futures(futures);
-        });
+    std::vector<future<>> futures;
+    co_await lister::scan_dir(pending_delete_dir, { directory_entry_type::regular }, [&futures] (fs::path dir, directory_entry de) {
+        // push nested futures that remove files/directories into an array of futures,
+        // so that the supplied callback will not block scan_dir() from
+        // reading the next entry in the directory.
+        fs::path file_path = dir / de.name;
+        if (file_path.extension() == ".tmp") {
+            dblog.info("Found temporary pending_delete log file: {}, deleting", file_path);
+            futures.push_back(remove_file(file_path.string()));
+        } else if (file_path.extension() == ".log") {
+            dblog.info("Found pending_delete log file: {}, replaying", file_path);
+            auto f = sstables::replay_pending_delete_log(file_path.string()).then([file_path = std::move(file_path)] {
+                dblog.debug("Replayed {}, removing", file_path);
+                return remove_file(file_path.string());
+            });
+            futures.push_back(std::move(f));
+        } else {
+            dblog.debug("Found unknown file in pending_delete directory: {}, ignoring", file_path);
+        }
+        return make_ready_future<>();
     });
+    co_await execute_futures(futures);
 }
 
 future<> distributed_loader::populate_column_family(distributed<database>& db, sstring sstdir, sstring ks, sstring cf) {
