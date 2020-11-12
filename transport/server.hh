@@ -271,7 +271,9 @@ private:
     uint64_t _total_connections = 0;
     uint64_t _current_connections = 0;
     uint64_t _connections_being_accepted = 0;
+    future<> _latency_fairy;
 private:
+    future<> run_latency_fairy();
     future<> advertise_new_connection(shared_ptr<connection> conn);
     future<> unadvertise_connection(shared_ptr<connection> conn);
 

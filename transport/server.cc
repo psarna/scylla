@@ -27,6 +27,7 @@
 #include <boost/assign.hpp>
 #include <boost/range/adaptor/sliced.hpp>
 
+#include "database.hh"
 #include "cql3/statements/batch_statement.hh"
 #include "types/collection.hh"
 #include "types/list.hh"
@@ -45,6 +46,7 @@
 #include <seastar/net/byteorder.hh>
 #include <seastar/util/lazy.hh>
 #include <seastar/core/execution_stage.hh>
+#include <seastar/core/coroutine.hh>
 
 #include "enum_set.hh"
 #include "service/query_state.hh"
@@ -66,6 +68,8 @@
 #include "types/user.hh"
 
 #include "transport/cql_protocol_extension.hh"
+
+using namespace std::literals::chrono_literals;
 
 namespace cql_transport {
 
@@ -147,6 +151,46 @@ event::event_type parse_event_type(const sstring& value)
     }
 }
 
+future<> cql_server::run_latency_fairy() {
+    //TODO: make it a variable
+    static const double latency_threshold_us = 2000000.;
+    //TODO: handle more scheduling groups
+    auto& proxy = _query_processor.local().proxy();
+    scheduling_group sg = proxy.get_db().local().get_statement_scheduling_group();
+    auto& stats = scheduling_group_get_specific<service::storage_proxy_stats::stats>(sg, proxy.get_stats_key());
+    int64_t prev_requests_served = std::numeric_limits<int64_t>::max();
+    int64_t prev_requests_served_delta = 0;
+    while (true) {
+        if (_stopping) {
+            co_return;
+        }
+        //TODO: more latency estimates, e.g. for CAS
+        int64_t est_write_latency = stats.estimated_write.quantile(0.99);
+        int64_t est_read_latency = stats.estimated_read.quantile(0.99);
+        //NOTE: these stats are specific to the statement scheduling group
+        int64_t requests_served_delta = _stats.requests_served - prev_requests_served;
+        double write_latency_factor = latency_threshold_us / std::max(est_write_latency, 1L);
+        double read_latency_factor = latency_threshold_us / std::max(est_read_latency, 1L);
+        int64_t projected_write_limit_for_2s_latency_assuming_const_throughput = _stats.requests_serving * write_latency_factor;
+        int64_t projected_read_limit_for_2s_latency_assuming_const_throughput = _stats.requests_serving * read_latency_factor;
+        clogger.warn("------------------------------");
+        clogger.warn("Estimated number of concurrent writes: {}, reads: {}", stats.writes, stats.reads);
+        clogger.warn("Overall requests: {}", _stats.requests_serving);
+        clogger.warn("Estimated .99th write latency: {}ms, estimated read latency: {}ms", est_write_latency/1000., est_read_latency/1000.);
+        clogger.warn("Requests served last second: {}. Previously the value was {}. Similar values means that throughput is stable",
+                requests_served_delta,
+                prev_requests_served_delta);
+        clogger.warn("Guessed concurrency limit for keeping 2s latency");
+        clogger.warn("assuming that throughput is already maxed: write: {}, read: {}",
+                projected_write_limit_for_2s_latency_assuming_const_throughput,
+                projected_read_limit_for_2s_latency_assuming_const_throughput);
+        clogger.warn("------------------------------");
+        prev_requests_served = _stats.requests_served;
+        prev_requests_served_delta = requests_served_delta;
+        co_await seastar::sleep(1s);
+    }
+}
+
 cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& auth_service,
         service::migration_notifier& mn, cql_server_config config)
     : _query_processor(qp)
@@ -156,6 +200,7 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
     , _memory_available(config.get_service_memory_limiter_semaphore())
     , _notifier(std::make_unique<event_notifier>(mn))
     , _auth_service(auth_service)
+    , _latency_fairy(run_latency_fairy())
 {
     namespace sm = seastar::metrics;
 
