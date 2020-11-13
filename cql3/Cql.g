@@ -68,6 +68,7 @@ options {
 #include "cql3/statements/revoke_role_statement.hh"
 #include "cql3/statements/drop_role_statement.hh"
 #include "cql3/statements/create_role_statement.hh"
+#include "cql3/statements/use_latency_limit_statement.hh"
 #include "cql3/statements/index_target.hh"
 #include "cql3/statements/ks_prop_defs.hh"
 #include "cql3/selection/raw_selector.hh"
@@ -370,6 +371,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
     | st38=dropRoleStatement           { $stmt = std::move(st38); }
     | st39=createRoleStatement         { $stmt = std::move(st39); }
     | st40=alterRoleStatement          { $stmt = std::move(st40); }
+    | st41=useLatencyLimitStatement    { $stmt = std::move(st41); }
     ;
 
 /*
@@ -377,6 +379,16 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
  */
 useStatement returns [std::unique_ptr<raw::use_statement> stmt]
     : K_USE ks=keyspaceName { $stmt = std::make_unique<raw::use_statement>(ks); }
+    ;
+
+/*
+ * USE LATENCY LIMIT <LIMITS>;
+ */
+useLatencyLimitStatement returns [std::unique_ptr<use_latency_limit_statement> stmt]
+    @init {
+        auto props = make_shared<latency_limit_prop_defs>();
+    }
+    : K_USE K_LATENCY K_LIMIT K_FOR properties[*props] { $stmt = std::make_unique<use_latency_limit_statement>(props); }
     ;
 
 /**
@@ -1761,6 +1773,8 @@ basic_unreserved_keyword returns [sstring str]
         | K_PER
         | K_PARTITION
         | K_GROUP
+        | K_LATENCY
+        | K_FOR
         ) { $str = $k.text; }
     ;
 
@@ -1915,6 +1929,9 @@ K_SCYLLA_COUNTER_SHARD_LIST: S C Y L L A '_' C O U N T E R '_' S H A R D '_' L I
 K_GROUP:       G R O U P;
 
 K_LIKE:        L I K E;
+
+K_LATENCY:     L A T E N C Y;
+K_FOR:         F O R;
 
 // Case-insensitive alpha characters
 fragment A: ('a'|'A');

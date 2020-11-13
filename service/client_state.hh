@@ -71,6 +71,11 @@ public:
         UNINITIALIZED, AUTHENTICATION, READY
     };
 
+    struct latency_limits {
+        std::optional<lowres_clock::duration> reads;
+        std::optional<lowres_clock::duration> writes;
+    };
+
     // This class is used to move client_state between shards
     // It is created on a shard that owns client_state than passed
     // to a target shard where client_state_for_another_shard::get()
@@ -135,6 +140,8 @@ private:
 
     // Only populated for external client state.
     auth::service* _auth_service{nullptr};
+
+    latency_limits _latency_limits;
 
 public:
     struct internal_tag {};
@@ -299,6 +306,14 @@ public:
             throw exceptions::invalid_request_exception("No keyspace has been specified. USE a keyspace, or explicitly specify keyspace.tablename");
         }
         return _keyspace;
+    }
+
+    void set_latency_limits(latency_limits&& limits) {
+        _latency_limits = std::move(limits);
+    }
+
+    const latency_limits& get_latency_limits() const {
+        return _latency_limits;
     }
 
     /**
