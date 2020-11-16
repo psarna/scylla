@@ -68,6 +68,7 @@ options {
 #include "cql3/statements/revoke_role_statement.hh"
 #include "cql3/statements/drop_role_statement.hh"
 #include "cql3/statements/create_role_statement.hh"
+#include "cql3/statements/alter_session_statement.hh"
 #include "cql3/statements/index_target.hh"
 #include "cql3/statements/ks_prop_defs.hh"
 #include "cql3/selection/raw_selector.hh"
@@ -370,6 +371,7 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
     | st38=dropRoleStatement           { $stmt = std::move(st38); }
     | st39=createRoleStatement         { $stmt = std::move(st39); }
     | st40=alterRoleStatement          { $stmt = std::move(st40); }
+    | st41=alterSessionStatement       { $stmt = std::move(st41); }
     ;
 
 /*
@@ -377,6 +379,15 @@ cqlStatement returns [std::unique_ptr<raw::parsed_statement> stmt]
  */
 useStatement returns [std::unique_ptr<raw::use_statement> stmt]
     : K_USE ks=keyspaceName { $stmt = std::make_unique<raw::use_statement>(ks); }
+    ;
+
+/*
+ * ALTER SESSION SET <PROPERTIES>;
+ */
+alterSessionStatement returns [std::unique_ptr<alter_session_statement> stmt]
+    : K_ALTER K_SESSION K_SET k=cident '='
+        ( c=constant { $stmt = std::make_unique<alter_session_statement>(k->to_string(), c->get_raw_text()); }
+        | K_NULL  { $stmt = std::make_unique<alter_session_statement>(k->to_string(), sstring("null")); } )
     ;
 
 /**
@@ -1761,6 +1772,7 @@ basic_unreserved_keyword returns [sstring str]
         | K_PER
         | K_PARTITION
         | K_GROUP
+        | K_SESSION
         ) { $str = $k.text; }
     ;
 
@@ -1915,6 +1927,8 @@ K_SCYLLA_COUNTER_SHARD_LIST: S C Y L L A '_' C O U N T E R '_' S H A R D '_' L I
 K_GROUP:       G R O U P;
 
 K_LIKE:        L I K E;
+
+K_SESSION:     S E S S I O N;
 
 // Case-insensitive alpha characters
 fragment A: ('a'|'A');
