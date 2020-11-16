@@ -71,6 +71,11 @@ public:
         UNINITIALIZED, AUTHENTICATION, READY
     };
 
+    struct session_params {
+        std::optional<lowres_clock::duration> read_timeout;
+        std::optional<lowres_clock::duration> write_timeout;
+    };
+
     // This class is used to move client_state between shards
     // It is created on a shard that owns client_state than passed
     // to a target shard where client_state_for_another_shard::get()
@@ -135,6 +140,8 @@ private:
 
     // Only populated for external client state.
     auth::service* _auth_service{nullptr};
+
+    session_params _session_params;
 
 public:
     struct internal_tag {};
@@ -299,6 +306,14 @@ public:
             throw exceptions::invalid_request_exception("No keyspace has been specified. USE a keyspace, or explicitly specify keyspace.tablename");
         }
         return _keyspace;
+    }
+
+    void set_session_params(session_params&& params) {
+        _session_params = std::move(params);
+    }
+
+    const session_params& get_session_params() const {
+        return _session_params;
     }
 
     /**
