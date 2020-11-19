@@ -286,7 +286,7 @@ modification_statement::do_execute(service::storage_proxy& proxy, service::query
 future<>
 modification_statement::execute_without_condition(service::storage_proxy& proxy, service::query_state& qs, const query_options& options) const {
     auto cl = options.get_consistency();
-    auto timeout = db::timeout_clock::now() + options.get_timeout_config().*get_timeout_config_selector();
+    auto timeout = db::timeout_clock::now() + get_timeout(qs.get_client_state(), options);
     return get_mutations(proxy, options, timeout, false, options.get_timestamp(qs), qs).then([this, cl, timeout, &proxy, &qs] (auto mutations) {
         if (mutations.empty()) {
             return now();
@@ -652,6 +652,12 @@ void modification_statement::validate_where_clause_for_conditions() const {
 
 modification_statement::json_cache_opt modification_statement::maybe_prepare_json_cache(const query_options& options) const {
     return {};
+}
+
+db::timeout_clock::duration modification_statement::get_timeout(const service::client_state& state, const query_options& options) const {
+    return state.get_session_params().latency_limit_for_writes.value_or(
+        options.get_timeout_config().*get_timeout_config_selector()
+    );
 }
 
 const statement_type statement_type::INSERT = statement_type(statement_type::type::insert);
