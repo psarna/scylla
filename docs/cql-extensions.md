@@ -42,3 +42,37 @@ way as other options by using `WITH` clause:
 
     CREATE TABLE tbl ...
     WITH paxos_grace_seconds=1234
+
+## ALTER SESSION
+
+The `ALTER SESSION` statement can be used to configure session-specific settings,
+e.g. custom latency limits.
+
+Examples:
+```cql
+ALTER SESSION
+	SET latency_limit_for_reads = 50ms
+	AND latency_limit_for_writes = 20ms
+```
+```cql
+ALTER SESSION
+	DELETE latency_limit_for_reads
+```
+
+`ALTER SESSION` allows setting and deleting key-value pairs of predefined
+session-specific configuration. This configuration affects only a single
+connection on which the statement was executed (similarly to `USE <keyspace>`),
+so users and drivers need to take care to transmit the configuration each time
+a connection is established.
+
+Currently supported parameters:
+ * `latency_limit_for_reads` - takes a value represented as CQL duration and applies custom timeout to read operations,
+    similarly to what `read_request_timeout_in_ms` does in scylla.yaml configuration file
+ * `latency_limit_for_writes` - takes a value represented as CQL duration and applies custom timeout to write operations
+    similarly to what `write_request_timeout_in_ms` does in scylla.yaml configuration file
+
+The current state can be checked via querying the local `system.clients` table:
+```cql
+SELECT params FROM system.clients;
+```
+
