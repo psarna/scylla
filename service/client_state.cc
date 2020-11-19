@@ -271,3 +271,18 @@ future<> service::client_state::ensure_exists(const auth::resource& r) const {
         return make_ready_future<>();
     });
 }
+
+std::map<sstring, sstring> service::client_state::session_params::to_map() const {
+    std::map<sstring, sstring> map;
+    if (latency_limit_for_reads) {
+        int64_t nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(*latency_limit_for_reads).count();
+        map.emplace("latency_limit_for_reads",
+                to_string(cql_duration(months_counter(0), days_counter(0), nanoseconds_counter(nanos))));
+    }
+    if (latency_limit_for_writes) {
+        int64_t nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(*latency_limit_for_writes).count();
+        map.emplace("latency_limit_for_writes",
+                to_string(cql_duration(months_counter(0), days_counter(0), nanoseconds_counter(nanos))));
+    }
+    return map;
+}
