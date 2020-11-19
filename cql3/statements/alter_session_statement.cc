@@ -20,6 +20,11 @@
  */
 
 #include "cql3/statements/alter_session_statement.hh"
+#include "db/system_keyspace.hh"
+#include "db/query_context.hh"
+#include "types.hh"
+#include "concrete_types.hh"
+#include "types/map.hh"
 #include "connection_notifier.hh"
 
 #include "transport/messages/result_message.hh"
@@ -63,6 +68,21 @@ void alter_session_statement::validate(service::storage_proxy&, const service::c
     }
 }
 
+static future<> update_system_clients_table(service::client_state& state) {
+    const static sstring req = format("UPDATE system.{} SET params = ? WHERE address = ? AND port = ? AND client_type = '{}';",
+            db::system_keyspace::CLIENTS, to_string(client_type::cql));
+    std::vector<std::pair<data_value, data_value>> entries;
+    for (auto&& entry : state.get_session_params().to_map()) {
+        entries.push_back({data_value(entry.first), data_value(entry.second)});
+    }
+
+    return db::qctx->execute_cql(req,
+            make_map_value(map_type_impl::get_instance(utf8_type, utf8_type, false), entries),
+            state.get_client_address(),
+            state.get_client_port())
+        .discard_result();
+}
+
 static service::client_state::session_params
 get_params(const std::map<sstring, sstring>& raw_params) {
     service::client_state::session_params params;
@@ -99,8 +119,10 @@ alter_session_statement::execute(service::storage_proxy& proxy, service::query_s
         raw_params_map[_key] = _value;
     }
     state.set_session_params(get_params(raw_params_map));
-    auto result = ::make_shared<cql_transport::messages::result_message::void_message>();
-    return make_ready_future<::shared_ptr<cql_transport::messages::result_message>>(result);
+    return update_system_clients_table(state).then([] {
+        auto result = ::make_shared<cql_transport::messages::result_message::void_message>();
+        return make_ready_future<::shared_ptr<cql_transport::messages::result_message>>(result);
+    });
 }
 
 std::unique_ptr<prepared_statement> alter_session_statement::prepare(database& db, cql_stats& stats) {
