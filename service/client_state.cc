@@ -271,3 +271,22 @@ future<> service::client_state::ensure_exists(const auth::resource& r) const {
         return make_ready_future<>();
     });
 }
+
+std::map<sstring, sstring> service::client_state::session_params::to_map() const {
+    std::map<sstring, sstring> map;
+    auto to_duration_string = [] (int64_t nanos) {
+        if (nanos == 0) {
+            return sstring("0s");
+        }
+        return to_string(cql_duration(months_counter(0), days_counter(0), nanoseconds_counter(nanos)));
+    };
+    if (read_timeout) {
+        int64_t nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(*read_timeout).count();
+        map.emplace("read_timeout", to_duration_string(nanos));
+    }
+    if (write_timeout) {
+        int64_t nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(*write_timeout).count();
+        map.emplace("write_timeout", to_duration_string(nanos));
+    }
+    return map;
+}

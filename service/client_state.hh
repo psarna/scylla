@@ -74,6 +74,8 @@ public:
     struct session_params {
         std::optional<lowres_clock::duration> read_timeout;
         std::optional<lowres_clock::duration> write_timeout;
+
+        std::map<sstring, sstring> to_map() const;
     };
 
     // This class is used to move client_state between shards
