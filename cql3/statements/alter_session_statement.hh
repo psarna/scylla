@@ -24,7 +24,6 @@
 #include "transport/messages_fwd.hh"
 #include "cql3/cql_statement.hh"
 #include "cql3/statements/raw/parsed_statement.hh"
-#include "cql3/statements/alter_session_prop_defs.hh"
 #include "prepared_statement.hh"
 
 namespace cql3 {
@@ -33,12 +32,11 @@ namespace statements {
 
 class alter_session_statement : public cql_statement_no_metadata, public raw::parsed_statement {
 private:
-    const ::shared_ptr<alter_session_prop_defs> _props;
-    std::optional<sstring> _to_delete;
+    sstring _key;
+    sstring _value;
 
 public:
-    explicit alter_session_statement(::shared_ptr<alter_session_prop_defs> props);
-    explicit alter_session_statement(sstring to_delete);
+    alter_session_statement(sstring key, sstring value);
 
     virtual uint32_t get_bound_terms() const override;
     virtual bool depends_on_keyspace(const sstring& ks_name) const override;
