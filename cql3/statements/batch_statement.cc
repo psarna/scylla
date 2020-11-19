@@ -286,7 +286,7 @@ future<shared_ptr<cql_transport::messages::result_message>> batch_statement::do_
     ++_stats.batches;
     _stats.statements_in_batches += _statements.size();
 
-    auto timeout = db::timeout_clock::now() + options.get_timeout_config().*get_timeout_config_selector();
+    auto timeout = db::timeout_clock::now() + get_timeout(query_state.get_client_state(), options);
     return get_mutations(storage, options, timeout, local, now, query_state).then([this, &storage, &options, timeout, tr_state = query_state.get_trace_state(),
                                                                                                                                permit = query_state.get_permit()] (std::vector<mutation> ms) mutable {
         return execute_without_conditions(storage, std::move(ms), options.get_consistency(), timeout, std::move(tr_state), std::move(permit));
@@ -416,6 +416,12 @@ void batch_statement::build_cas_result_set_metadata() {
         }
     }
     _metadata = seastar::make_shared<cql3::metadata>(std::move(columns));
+}
+
+db::timeout_clock::duration batch_statement::get_timeout(const service::client_state& state, const query_options& options) const {
+    return state.get_session_params().write_timeout.value_or(
+        options.get_timeout_config().*get_timeout_config_selector()
+    );
 }
 
 namespace raw {
