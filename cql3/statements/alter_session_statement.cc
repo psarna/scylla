@@ -40,6 +40,8 @@
  */
 
 #include "cql3/statements/alter_session_statement.hh"
+#include "db/system_keyspace.hh"
+#include "db/query_context.hh"
 
 #include "transport/messages/result_message.hh"
 
@@ -78,11 +80,24 @@ void alter_session_statement::validate(service::storage_proxy&, const service::c
     props->validate();
 }
 
+static future<> update_system_clients_table(service::client_state& state) {
+        // FIXME: consider prepared statement
+    const static sstring req = format("UPDATE system.{} SET {} = ? WHERE address = ? AND port = ?;",
+            db::system_keyspace::CLIENTS);
+    return db::execute_cql(req,
+            params.to_map(),
+            state.get_client_address(),
+            state.get_client_port())
+        .discard_result();
+}
+
 future<::shared_ptr<cql_transport::messages::result_message>>
 alter_session_statement::execute(service::storage_proxy& proxy, service::query_state& state, const query_options& options) const {
     state.get_client_state().set_session_params(props->get_params());
-    auto result = ::make_shared<cql_transport::messages::result_message::void_message>();
-    return make_ready_future<::shared_ptr<cql_transport::messages::result_message>>(result);
+    return update_system_clients_table(state.get_client_state(), props->get_raw_params()).then([] {
+        auto result = ::make_shared<cql_transport::messages::result_message::void_message>();
+        make_ready_future<::shared_ptr<cql_transport::messages::result_message>>(result);
+    });
 }
 
 std::unique_ptr<prepared_statement> alter_session_statement::prepare(database& db, cql_stats& stats) {
