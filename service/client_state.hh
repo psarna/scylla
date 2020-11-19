@@ -74,6 +74,8 @@ public:
     struct session_params {
         std::optional<lowres_clock::duration> latency_limit_for_reads;
         std::optional<lowres_clock::duration> latency_limit_for_writes;
+
+        std::map<sstring, sstring> to_map() const;
     };
 
     // This class is used to move client_state between shards
