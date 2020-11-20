@@ -4768,3 +4768,43 @@ SEASTAR_THREAD_TEST_CASE(test_invalid_using_timestamps) {
         BOOST_REQUIRE_THROW(e.execute_cql(format("BEGIN BATCH USING TIMESTAMP {} INSERT INTO TBL (a, b) VALUES (2, 2); APPLY BATCH", now_nano)).get(), exceptions::invalid_request_exception);
     }).get();
 }
+
+// ALTER SESSION statement requires driver cooperation, so it's much easier
+// to test it via a unit test
+SEASTAR_TEST_CASE(test_alter_session) {
+    return do_with_cql_env_thread([] (cql_test_env& e) {
+        cquery_nofail(e, "CREATE TABLE t (id int PRIMARY KEY, v int)");
+        cquery_nofail(e, "ALTER SESSION SET read_timeout = 5ms");
+        cquery_nofail(e, "ALTER SESSION SET write_timeout = 1h30m");
+
+	    auto my_map_type = map_type_impl::get_instance(utf8_type, utf8_type, false);
+
+	    auto msg = cquery_nofail(e, "SELECT params FROM system.clients");
+        assert_that(msg).is_rows().with_rows({{
+            my_map_type->decompose(make_map_value(my_map_type, map_type_impl::native_type({{"read_timeout", "5ms"}, {"write_timeout", "1h30m"}}))),
+        }});
+
+        cquery_nofail(e, "ALTER SESSION SET write_timeout = 35s");
+        cquery_nofail(e, "ALTER SESSION SET read_timeout = NULL");
+
+	    msg = cquery_nofail(e, "SELECT params FROM system.clients");
+        assert_that(msg).is_rows().with_rows({{
+            my_map_type->decompose(make_map_value(my_map_type, map_type_impl::native_type({{"write_timeout", "35s"}}))),
+        }});
+
+        // Setting a timeout value of 0 makes little sense, but it's great for testing
+        cquery_nofail(e, "ALTER SESSION SET write_timeout = 0s");
+        cquery_nofail(e, "ALTER SESSION SET read_timeout = 0s");
+        BOOST_REQUIRE_THROW(e.execute_cql("SELECT * FROM t").get(), exceptions::read_timeout_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("INSERT INTO t (id, v) VALUES (1,2)").get(), exceptions::mutation_write_failure_exception);
+
+        cquery_nofail(e, "ALTER SESSION SET write_timeout = 1s");
+        cquery_nofail(e, "ALTER SESSION SET read_timeout = 1s");
+        cquery_nofail(e, "SELECT * FROM t");
+        cquery_nofail(e, "INSERT INTO t (id, v) VALUES (1,2)");
+
+        // Only valid parameters are accepted, and their values are also validated
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER SESSION SET i_do_not_exist = 42").get(), exceptions::invalid_request_exception);
+        BOOST_REQUIRE_THROW(e.execute_cql("ALTER SESSION SET read_timeout = 'I am not a valid duration'").get(), marshal_exception);
+    });
+}
