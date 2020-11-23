@@ -206,12 +206,15 @@ public:
         return _timeout_config;
     }
 
-    client_state(internal_tag)
+    client_state(internal_tag) : client_state(internal_tag{}, infinite_timeout_config)
+    {}
+
+    client_state(internal_tag, const timeout_config& config)
             : _keyspace("system")
             , _is_internal(true)
             , _is_thrift(false)
-            , _global_timeout_config_ref(infinite_timeout_config)
-            , _timeout_config(infinite_timeout_config)
+            , _global_timeout_config_ref(config)
+            , _timeout_config(config)
     {}
 
     client_state(const client_state&) = delete;
