@@ -329,9 +329,7 @@ public:
         return _keyspace;
     }
 
-    void set_session_params(session_params&& params) {
-        _session_params = std::move(params);
-    }
+    void set_session_params(session_params&& params);
 
     const session_params& get_session_params() const {
         return _session_params;
