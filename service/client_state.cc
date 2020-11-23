@@ -272,6 +272,14 @@ future<> service::client_state::ensure_exists(const auth::resource& r) const {
     });
 }
 
+void service::client_state::set_session_params(session_params&& params) {
+    _session_params = std::move(params);
+    _timeout_config.read_timeout = _session_params.read_timeout.value_or(_default_timeout_config.read_timeout);
+    _timeout_config.range_read_timeout = _session_params.read_timeout.value_or(_default_timeout_config.range_read_timeout);
+    _timeout_config.write_timeout = _session_params.write_timeout.value_or(_default_timeout_config.write_timeout);
+    _timeout_config.counter_write_timeout = _session_params.write_timeout.value_or(_default_timeout_config.counter_write_timeout);
+}
+
 std::map<sstring, sstring> service::client_state::session_params::to_map() const {
     std::map<sstring, sstring> map;
     auto to_duration_string = [] (int64_t nanos) {
