@@ -269,7 +269,7 @@ future<> password_authenticator::maybe_update_custom_options(std::string_view ro
             OPTIONS,
             meta::roles_table::role_col_name);
 
-    if (!options.options || options.options->empty()) {
+    if (!options.options) {
         return make_ready_future<>();
     }
 
@@ -332,7 +332,22 @@ future<> password_authenticator::drop(std::string_view name) const {
 }
 
 future<custom_options> password_authenticator::query_custom_options(std::string_view role_name) const {
-    return make_ready_future<custom_options>();
+    static const sstring query = format("SELECT {} FROM {} WHERE {} = ?",
+            OPTIONS,
+            meta::roles_table::qualified_name,
+            meta::roles_table::role_col_name);
+
+    return _qp.execute_internal(
+            query, consistency_for_user(role_name),
+            internal_distributed_query_state(),
+            {sstring(role_name)}).then([](::shared_ptr<cql3::untyped_result_set> rs) {
+        custom_options opts;
+        const auto& row = rs->one();
+        if (row.has(OPTIONS)) {
+            row.get_map_data<sstring, sstring>(OPTIONS, std::inserter(opts, opts.end()), utf8_type, utf8_type);
+        }
+        return opts;
+    });
 }
 
 const resource_set& password_authenticator::protected_resources() const {
