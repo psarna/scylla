@@ -310,7 +310,7 @@ create_index_statement::announce_migration(service::storage_proxy& proxy) const 
     schema_builder builder{schema};
     builder.with_index(index);
     return service::get_local_migration_manager().announce_column_family_update(
-            builder.build(), false, {}).then([this]() {
+            builder.build(), false, {}, std::nullopt).then([this]() {
         using namespace cql_transport;
         return ::make_shared<event::schema_change>(
                 event::schema_change::change_type::UPDATED,
