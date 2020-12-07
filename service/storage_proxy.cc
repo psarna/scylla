@@ -2762,18 +2762,21 @@ public:
         _timeout.arm(timeout);
     }
     virtual ~abstract_read_resolver() {};
-    virtual void on_error(gms::inet_address ep, bool disconnect) = 0;
+    virtual void on_error(gms::inet_address ep, bool disconnect, std::exception_ptr overloaded) = 0;
     future<> done() {
         return _done_promise.get_future();
     }
     void error(gms::inet_address ep, std::exception_ptr eptr) {
         sstring why;
         bool disconnect = false;
+        std::exception_ptr overloaded = nullptr;
         try {
             std::rethrow_exception(eptr);
         } catch (rpc::closed_error&) {
             // do not report connection closed exception, gossiper does that
             disconnect = true;
+        } catch (exceptions::overloaded_exception& e) {
+            overloaded = std::make_exception_ptr(e);
         } catch (rpc::timeout_error&) {
             // do not report timeouts, the whole operation will timeout and be reported
             return; // also do not report timeout as replica failure for the same reason
@@ -2782,7 +2785,7 @@ public:
         }
 
         if (!_request_failed) { // request may fail only once.
-            on_error(ep, disconnect);
+            on_error(ep, disconnect, overloaded);
         }
     }
 };
@@ -2863,7 +2866,7 @@ public:
             _done_promise.set_value();
         }
     }
-    void on_error(gms::inet_address ep, bool disconnect) override {
+    void on_error(gms::inet_address ep, bool disconnect, std::exception_ptr overloaded) override {
         if (waiting_for(ep)) {
             _failed++;
         }
@@ -2874,7 +2877,11 @@ public:
             return;
         }
         if (_block_for + _failed > _target_count_for_cl) {
-            fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, _cl_responses, _failed, _block_for, _data_result)));
+            if (overloaded) {
+                fail_request(std::move(overloaded));
+            } else {
+                fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, _cl_responses, _failed, _block_for, _data_result)));
+            }
         }
     }
     future<digest_read_result> has_cl() {
@@ -3175,8 +3182,12 @@ public:
             }
         }
     }
-    void on_error(gms::inet_address ep, bool disconnect) override {
-        fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, response_count(), 1, _targets_count, response_count() != 0)));
+    void on_error(gms::inet_address ep, bool disconnect, std::exception_ptr overloaded) override {
+        if (overloaded) {
+            fail_request(std::move(overloaded));
+        } else {
+            fail_request(std::make_exception_ptr(read_failure_exception(_schema->ks_name(), _schema->cf_name(), _cl, response_count(), 1, _targets_count, response_count() != 0)));
+        }
     }
     uint32_t max_live_count() const {
         return _max_live_count;
@@ -3474,6 +3485,11 @@ protected:
             return make_mutation_data_request(cmd, ep, timeout).then_wrapped([this, resolver, ep] (future<rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature, query::status>> f) {
                 try {
                     auto v = f.get0();
+                    if (std::get<query::status>(v) == query::status::OVERLOADED) {
+                        ++_proxy->get_stats().mutation_data_read_errors.get_ep_stat(ep);
+                        resolver->error(ep, std::make_exception_ptr(exceptions::overloaded_exception(format("Replica {} is overloaded", ep))));
+                        return make_ready_future<>();
+                    }
                     _cf->set_hit_rate(ep, std::get<1>(v));
                     resolver->add_mutate_data(ep, std::get<0>(std::move(v)));
                     ++_proxy->get_stats().mutation_data_read_completed.get_ep_stat(ep);
@@ -3481,6 +3497,7 @@ protected:
                     ++_proxy->get_stats().mutation_data_read_errors.get_ep_stat(ep);
                     resolver->error(ep, std::current_exception());
                 }
+                return make_ready_future<>();
             });
         });
     }
@@ -3489,6 +3506,11 @@ protected:
             return make_data_request(ep, timeout, want_digest).then_wrapped([this, resolver, ep] (future<rpc::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature, query::status>> f) {
                 try {
                     auto v = f.get0();
+                    if (std::get<query::status>(v) == query::status::OVERLOADED) {
+                        ++_proxy->get_stats().data_read_errors.get_ep_stat(ep);
+                        resolver->error(ep, std::make_exception_ptr(exceptions::overloaded_exception(format("Replica {} is overloaded", ep))));
+                        return make_ready_future<>();
+                    }
                     _cf->set_hit_rate(ep, std::get<1>(v));
                     resolver->add_data(ep, std::get<0>(std::move(v)));
                     ++_proxy->get_stats().data_read_completed.get_ep_stat(ep);
@@ -3497,6 +3519,7 @@ protected:
                     ++_proxy->get_stats().data_read_errors.get_ep_stat(ep);
                     resolver->error(ep, std::current_exception());
                 }
+                return make_ready_future<>();
             });
         });
     }
@@ -3505,6 +3528,11 @@ protected:
             return make_digest_request(ep, timeout).then_wrapped([this, resolver, ep] (future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, query::status>> f) {
                 try {
                     auto v = f.get0();
+                    if (std::get<query::status>(v) == query::status::OVERLOADED) {
+                        ++_proxy->get_stats().digest_read_errors.get_ep_stat(ep);
+                        resolver->error(ep, std::make_exception_ptr(exceptions::overloaded_exception(format("Replica {} is overloaded", ep))));
+                        return make_ready_future<>();
+                    }
                     _cf->set_hit_rate(ep, std::get<2>(v));
                     resolver->add_digest(ep, std::get<0>(v), std::get<1>(v));
                     ++_proxy->get_stats().digest_read_completed.get_ep_stat(ep);
@@ -3513,6 +3541,7 @@ protected:
                     ++_proxy->get_stats().digest_read_errors.get_ep_stat(ep);
                     resolver->error(ep, std::current_exception());
                 }
+                return make_ready_future<>();
             });
         });
     }
@@ -4959,7 +4988,14 @@ void storage_proxy::init_messaging_service() {
                 opts.digest_algo = da;
                 opts.request = da == query::digest_algorithm::none ? query::result_request::only_result : query::result_request::result_and_digest;
                 auto timeout = t ? *t : db::no_timeout;
-                return p->query_result_local(std::move(s), cmd, std::move(pr2.first), opts, trace_state_ptr, timeout);
+                return p->query_result_local(std::move(s), cmd, std::move(pr2.first), opts, trace_state_ptr, timeout).handle_exception_type([&p] (const exceptions::overloaded_exception& e) {
+                    if (p->features().cluster_supports_query_status_for_reads()) {
+                        return make_ready_future<rpc::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature, query::status>>(
+                                rpc::tuple(make_foreign(make_lw_shared<query::result>()), cache_temperature::invalid(), query::status::OVERLOADED));
+                    } else {
+                        return make_exception_future<rpc::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature, query::status>>(e);
+                    }
+                });
             }).finally([&trace_state_ptr, src_ip] () mutable {
                 tracing::trace(trace_state_ptr, "read_data handling is done, sending a response to /{}", src_ip);
             });
@@ -4990,7 +5026,14 @@ void storage_proxy::init_messaging_service() {
             return get_schema_for_read(cmd->schema_version, std::move(src_addr), p->_messaging).then([cmd, &pr, &p, &trace_state_ptr, &unwrapped, t] (schema_ptr s) mutable {
                 unwrapped = ::compat::unwrap(std::move(pr), *s);
                 auto timeout = t ? *t : db::no_timeout;
-                return p->query_mutations_locally(std::move(s), std::move(cmd), unwrapped, timeout, trace_state_ptr);
+                return p->query_mutations_locally(std::move(s), std::move(cmd), unwrapped, timeout, trace_state_ptr).handle_exception_type([&p] (const exceptions::overloaded_exception& e) {
+                    if (p->features().cluster_supports_query_status_for_reads()) {
+                        return make_ready_future<rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature, query::status>>(
+                                rpc::tuple(make_foreign(make_lw_shared<reconcilable_result>()), cache_temperature::invalid(), query::status::OVERLOADED));
+                    } else {
+                        return make_exception_future<rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature, query::status>>(e);
+                    }
+                });
             }).finally([&trace_state_ptr, src_ip] () mutable {
                 tracing::trace(trace_state_ptr, "read_mutation_data handling is done, sending a response to /{}", src_ip);
             });
@@ -5018,7 +5061,14 @@ void storage_proxy::init_messaging_service() {
                     throw std::runtime_error("READ_DIGEST called with wrapping range");
                 }
                 auto timeout = t ? *t : db::no_timeout;
-                return p->query_result_local_digest(std::move(s), cmd, std::move(pr2.first), trace_state_ptr, timeout, da);
+                return p->query_result_local_digest(std::move(s), cmd, std::move(pr2.first), trace_state_ptr, timeout, da).handle_exception_type([&p] (const exceptions::overloaded_exception& e) {
+                    if (p->features().cluster_supports_query_status_for_reads()) {
+                        return make_ready_future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, query::status>>(
+                                rpc::tuple(query::result_digest(), api::new_timestamp(), cache_temperature::invalid(), query::status::OVERLOADED));
+                    } else {
+                        return make_exception_future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature, query::status>>(e);
+                    }
+                });
             }).finally([&trace_state_ptr, src_ip] () mutable {
                 tracing::trace(trace_state_ptr, "read_digest handling is done, sending a response to /{}", src_ip);
             });
