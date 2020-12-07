@@ -101,7 +101,7 @@ future<prepare_response> paxos_state::prepare(tracing::trace_state_ptr tr_state,
                         // Silently ignore any errors querying the current value as the caller is prepared to fall back
                         // on querying it by itself in case it's missing in the response.
                         if (!f2.failed()) {
-                            auto&& [result, hit_rate] = f2.get0();
+                            auto&& [result, hit_rate, status] = f2.get0();
                             if (only_digest) {
                                 data_or_digest = *result->digest();
                             } else {

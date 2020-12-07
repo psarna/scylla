@@ -25,6 +25,7 @@
 #include "schema_fwd.hh"
 #include "mutation_query.hh"
 #include "cache_temperature.hh"
+#include "query-status.hh"
 
 #include <seastar/core/distributed.hh>
 
@@ -61,7 +62,7 @@
 ///
 /// \see multishard_combined_reader
 /// \see querier_cache
-future<std::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature>> query_mutations_on_all_shards(
+future<std::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature, query::status>> query_mutations_on_all_shards(
         distributed<database>& db,
         schema_ptr s,
         const query::read_command& cmd,

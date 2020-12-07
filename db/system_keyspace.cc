@@ -1798,7 +1798,7 @@ query_mutations(distributed<service::storage_proxy>& proxy, const sstring& ks_na
     auto slice = partition_slice_builder(*schema).build();
     auto cmd = make_lw_shared<query::read_command>(schema->id(), schema->version(), std::move(slice), proxy.local().get_max_result_size(slice));
     return proxy.local().query_mutations_locally(std::move(schema), std::move(cmd), query::full_partition_range, db::no_timeout)
-            .then([] (rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature> rr_ht) { return std::get<0>(std::move(rr_ht)); });
+            .then([] (rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature, query::status> rr_ht_sts) { return std::get<0>(std::move(rr_ht_sts)); });
 }
 
 future<lw_shared_ptr<query::result_set>>
