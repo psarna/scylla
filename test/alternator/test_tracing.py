@@ -50,6 +50,7 @@ def with_tracing(dynamodb):
     # The REST API is on port 10000, and always http, not https.
     url = re.sub(r':[0-9]+(/|$)', ':10000', url)
     url = re.sub(r'^https:', 'http:', url)
+    probability = requests.get(url+'/storage_service/trace_probability').text
     response = requests.post(url+'/storage_service/trace_probability?probability=1')
     if response.status_code != 200:
         pytest.skip('Failed to enable tracing')
@@ -58,8 +59,8 @@ def with_tracing(dynamodb):
     if response.status_code != 200 or response.content.decode('utf-8') != '1':
         pytest.skip('Failed to verify tracing')
     yield
-    print("with_tracing disabling tracing")
-    response = requests.post(url+'/storage_service/trace_probability?probability=0')
+    print("with_tracing restoring tracing")
+    response = requests.post(url+'/storage_service/trace_probability?probability='+probability)
     if response.status_code != 200:
         pytest.fail('Failed to disable tracing after with_tracing test')
     response = requests.get(url+'/storage_service/trace_probability')
