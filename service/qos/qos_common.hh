@@ -26,8 +26,8 @@
 #include <seastar/core/print.hh>
 #include <map>
 #include <stdexcept>
-
-
+#include <optional>
+#include <seastar/core/lowres_clock.hh>
 
 namespace qos {
 
@@ -36,6 +36,8 @@ namespace qos {
  *  a service level.
  */
 struct service_level_options {
+    std::optional<lowres_clock::duration> timeout = {};
+
     bool operator==(const service_level_options& other) const = default;
     bool operator!=(const service_level_options& other) const = default;
 };
