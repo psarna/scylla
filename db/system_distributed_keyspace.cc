@@ -468,8 +468,21 @@ future<qos::service_levels_info> system_distributed_keyspace::get_service_level(
 }
 
 future<> system_distributed_keyspace::set_service_level(sstring service_level_name, qos::service_level_options slo) const {
-    static sstring prepared_puery = format("INSERT INTO {}.{} (service_level) VALUES (?);", NAME, SERVICE_LEVELS);
-    return _qp.execute_internal(prepared_puery, {service_level_name}).discard_result();
+    static sstring prepared_query = format("INSERT INTO {}.{} (service_level) VALUES (?);", NAME, SERVICE_LEVELS);
+    co_await _qp.execute_internal(prepared_query, {service_level_name});
+    auto to_data_value = [&] (const std::optional<lowres_clock::duration>& d) {
+        return d
+                ? data_value(cql_duration(months_counter{0}, days_counter{0}, nanoseconds_counter{std::chrono::duration_cast<std::chrono::nanoseconds>(*d).count()}))
+                : data_value::make_null(duration_type);
+    };
+    co_await _qp.execute_internal(format("UPDATE {}.{} SET read_timeout = ? "
+                ", write_timeout = ?, range_read_timeout = ?, counter_write_timeout = ? "
+                ", truncate_timeout = ?, cas_timeout = ?, other_timeout = ? "
+                "WHERE service_level = ?;", NAME, SERVICE_LEVELS),
+                {to_data_value(slo.read_timeout),  to_data_value(slo.write_timeout),  to_data_value(slo.range_read_timeout),
+                to_data_value(slo.counter_write_timeout),  to_data_value(slo.truncate_timeout),
+                to_data_value(slo.cas_timeout),  to_data_value(slo.other_timeout), service_level_name});
+    co_return;
 }
 
 future<> system_distributed_keyspace::drop_service_level(sstring service_level_name) const {
