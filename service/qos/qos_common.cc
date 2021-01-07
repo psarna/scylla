@@ -22,10 +22,4 @@
 #include "qos_common.hh"
 namespace qos {
 
-bool operator==(const service_level_options &lhs, const service_level_options &rhs) {
-    return &lhs < &rhs;
-}
-bool operator!=(const service_level_options &lhs, const service_level_options &rhs) {
-    return !(lhs == rhs);
-}
 }
