@@ -43,6 +43,7 @@
 #include <vector>
 #include <optional>
 
+static logging::logger dlogger("system_distributed_keyspace");
 extern logging::logger cdc_log;
 
 namespace db {
@@ -135,6 +136,33 @@ system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& 
         , _mm(mm) {
 }
 
+static future<> add_timeout_columns_if_missing(database& db, ::service::migration_manager& mm) noexcept {
+    static std::string_view timeout_columns[] {
+        "read_timeout", "write_timeout", "range_read_timeout", "counter_write_timeout", "truncate_timeout", "cas_timeout", "other_timeout"
+    };
+    try {
+        auto schema = db.find_schema(system_distributed_keyspace::NAME, system_distributed_keyspace::SERVICE_LEVELS);
+        schema_builder b(schema);
+        bool updated = false;
+        for (const std::string_view& col_name : timeout_columns) {
+            bytes options_name = to_bytes(col_name.data());
+            if (schema->get_column_definition(options_name)) {
+                continue;
+            }
+            updated = true;
+            b.with_column(options_name, duration_type, column_kind::regular_column);
+        }
+        if (!updated) {
+            return make_ready_future<>();
+        }
+        schema_ptr table = b.build();
+        return mm.announce_column_family_update(table, false, {}, api::timestamp_type(0)).handle_exception([] (const std::exception_ptr&) {});
+    } catch (...) {
+        dlogger.warn("Failed to update options column in the role attributes table: {}", std::current_exception());
+        return make_ready_future<>();
+    }
+}
+
 future<> system_distributed_keyspace::start() {
     if (this_shard_id() != 0) {
         co_return;
@@ -158,6 +186,7 @@ future<> system_distributed_keyspace::start() {
             co_await later();
         }
     }
+    co_await add_timeout_columns_if_missing(_qp.db(), _mm);
 }
 
 future<> system_distributed_keyspace::stop() {
