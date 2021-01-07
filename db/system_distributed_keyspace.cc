@@ -35,6 +35,7 @@
 
 #include <seastar/core/seastar.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/coroutine.hh>
 
 #include <boost/range/adaptor/transformed.hpp>
 
@@ -136,31 +137,27 @@ system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& 
 
 future<> system_distributed_keyspace::start() {
     if (this_shard_id() != 0) {
-        return make_ready_future<>();
+        co_return;
     }
 
-    static auto ignore_existing = [] (seastar::noncopyable_function<future<>()> func) {
-        return futurize_invoke(std::move(func)).handle_exception_type([] (exceptions::already_exists_exception& ignored) { });
-    };
-
-    // We use min_timestamp so that the default keyspace metadata will lose with any manual adjustments.
-    // See issue #2129.
-    return ignore_existing([this] {
+    try {
         auto ksm = keyspace_metadata::new_keyspace(
                 NAME,
                 "org.apache.cassandra.locator.SimpleStrategy",
                 {{"replication_factor", "3"}},
                 true);
-        return _mm.announce_new_keyspace(ksm, api::min_timestamp);
-    }).then([this] {
-        return do_with(all_tables(), [this] (std::vector<schema_ptr>& tables) {
-            return do_for_each(tables, [this] (schema_ptr table) {
-                return ignore_existing([this, table = std::move(table)] {
-                    return _mm.announce_new_column_family(std::move(table), api::min_timestamp);
-                });
-            });
-        });
-    });
+        co_await _mm.announce_new_keyspace(ksm, api::min_timestamp);
+    } catch (const exceptions::already_exists_exception& ignored) {
+    }
+    for (auto& table : all_tables()) {
+        try {
+            co_await _mm.announce_new_column_family(std::move(table), api::min_timestamp);
+        } catch (const exceptions::already_exists_exception& ignored) {
+        }
+        if (need_preempt()) {
+            co_await later();
+        }
+    }
 }
 
 future<> system_distributed_keyspace::stop() {
