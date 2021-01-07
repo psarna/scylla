@@ -43,6 +43,8 @@ struct service_level_options {
     std::optional<lowres_clock::duration> truncate_timeout;
     std::optional<lowres_clock::duration> cas_timeout;
     std::optional<lowres_clock::duration> other_timeout;
+
+    void replace_defaults(const service_level_options& other);
 };
 
 /**
