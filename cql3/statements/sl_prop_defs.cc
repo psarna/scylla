@@ -8,6 +8,7 @@
 #include "database.hh"
 #include "duration.hh"
 #include "concrete_types.hh"
+#include <boost/algorithm/string/predicate.hpp>
 
 namespace cql3 {
 
@@ -18,7 +19,7 @@ void sl_prop_defs::validate() {
         "read_timeout", "write_timeout", "range_read_timeout", "counter_write_timeout", "truncate_timeout", "cas_timeout", "other_timeout"
     };
     auto get_duration = [&] (const std::optional<sstring>& repr) -> std::optional<lowres_clock::duration> {
-        if (!repr) {
+        if (!repr || boost::algorithm::iequals(*repr, "null")) {
             return std::nullopt;
         }
         data_value v = duration_type->deserialize(duration_type->from_string(*repr));
