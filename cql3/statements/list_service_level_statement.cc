@@ -43,7 +43,15 @@ list_service_level_statement::execute(service::storage_proxy &sp,
                 type);
     };
 
-    static thread_local const std::vector<lw_shared_ptr<column_specification>> metadata({make_column("service_level", utf8_type)});
+    static thread_local const std::vector<lw_shared_ptr<column_specification>> metadata({make_column("service_level", utf8_type),
+        make_column("read_timeout", duration_type),
+        make_column("write_timeout", duration_type),
+        make_column("range_read_timeout", duration_type),
+        make_column("counter_write_timeout", duration_type),
+        make_column("truncate_timeout", duration_type),
+        make_column("cas_timeout", duration_type),
+        make_column("other_timeout", duration_type),
+    });
 
     return make_ready_future().then([this, &state] () {
                                   if (_describe_all) {
@@ -53,10 +61,19 @@ list_service_level_statement::execute(service::storage_proxy &sp,
                                   }
                               })
             .then([this] (qos::service_levels_info sl_info) {
+                auto d = [] (const std::optional<lowres_clock::duration>& duration) -> bytes_opt {
+                    if (!duration) {
+                        return bytes_opt();
+                    }
+                    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(*duration).count();
+                    return duration_type->decompose(cql_duration(months_counter{0}, days_counter{0}, nanoseconds_counter{nanos}));
+                };
                 auto rs = std::make_unique<result_set>(metadata);
-                for (auto &&sl : sl_info) {
+                for (auto &&[sl_name, slo] : sl_info) {
                     rs->add_row(std::vector<bytes_opt>{
-                            utf8_type->decompose(sl.first)});
+                            utf8_type->decompose(sl_name), d(slo.read_timeout), d(slo.write_timeout),
+                            d(slo.range_read_timeout), d(slo.counter_write_timeout), d(slo.truncate_timeout),
+                            d(slo.cas_timeout), d(slo.other_timeout)});
                 }
 
                 auto rows = ::make_shared<cql_transport::messages::result_message::rows>(result(std::move(std::move(rs))));
