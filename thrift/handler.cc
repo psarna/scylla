@@ -221,7 +221,7 @@ public:
         : _db(db)
         , _query_processor(qp)
         , _timeout_config(timeout_config)
-        , _client_state(service::client_state::external_tag{}, auth_service, _timeout_config, socket_address(), true)
+        , _client_state(service::client_state::external_tag{}, auth_service, nullptr, _timeout_config, socket_address(), true)
         , _query_state(_client_state, /*FIXME: pass real permit*/empty_service_permit())
     { }
 
