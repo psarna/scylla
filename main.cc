@@ -86,6 +86,7 @@
 #include "alternator/tags_extension.hh"
 #include "alternator/rmw_operation.hh"
 #include "db/paxos_grace_seconds_extension.hh"
+#include "service/qos/standard_service_level_distributed_data_accessor.hh"
 
 namespace fs = std::filesystem;
 
@@ -1079,6 +1080,11 @@ int main(int ac, char** av) {
             sst_format_selector.sync();
             ss.join_cluster().get();
 
+            sl_controller.invoke_on_all([] (qos::service_level_controller& controller) {
+                controller.set_distributed_data_accessor(::static_pointer_cast<qos::service_level_controller::service_level_distributed_data_accessor>(
+                        ::make_shared<qos::standard_service_level_distributed_data_accessor>(sys_dist_ks.local())));
+            }).get();
+
             supervisor::notify("starting tracing");
             tracing::tracing::start_tracing(qp).get();
             /*
@@ -1331,6 +1337,10 @@ int main(int ac, char** av) {
 
             auto stop_repair = defer_verbose_shutdown("repair", [] {
                 repair_shutdown(service::get_local_storage_service().db()).get();
+            });
+
+            auto stop_sl_controller = defer_verbose_shutdown("service level controller", [] {
+                sl_controller.stop().get();
             });
 
             auto stop_view_update_generator = defer_verbose_shutdown("view update generator", [] {
