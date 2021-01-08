@@ -52,6 +52,7 @@
 #include "db/system_distributed_keyspace.hh"
 #include "database.hh"
 #include "cdc/log.hh"
+#include <seastar/core/coroutine.hh>
 
 thread_local api::timestamp_type service::client_state::_last_timestamp_micros = 0;
 
@@ -269,4 +270,23 @@ future<> service::client_state::ensure_exists(const auth::resource& r) const {
 
         return make_ready_future<>();
     });
+}
+
+future<> service::client_state::maybe_update_per_service_level_params() {
+    if (_sl_controller && _user && _user->name) {
+        const auto& role_manager = _auth_service->underlying_role_manager();
+        auto role_set = co_await role_manager.query_granted(_user->name.value(), auth::recursive_role_query::yes);
+        auto slo_opt = co_await _sl_controller->find_service_level(role_set);
+        if (!slo_opt) {
+            co_return;
+        }
+        const qos::service_level_options& slo = *slo_opt;
+        _timeout_config.read_timeout = slo.read_timeout.value_or(_default_timeout_config.read_timeout);
+        _timeout_config.write_timeout = slo.write_timeout.value_or(_default_timeout_config.write_timeout);
+        _timeout_config.range_read_timeout = slo.range_read_timeout.value_or(_default_timeout_config.range_read_timeout);
+        _timeout_config.counter_write_timeout = slo.counter_write_timeout.value_or(_default_timeout_config.counter_write_timeout);
+        _timeout_config.truncate_timeout = slo.truncate_timeout.value_or(_default_timeout_config.truncate_timeout);
+        _timeout_config.cas_timeout = slo.cas_timeout.value_or(_default_timeout_config.cas_timeout);
+        _timeout_config.other_timeout = slo.other_timeout.value_or(_default_timeout_config.other_timeout);
+    }
 }
