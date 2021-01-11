@@ -19,8 +19,11 @@ void sl_prop_defs::validate() {
         "read_timeout", "write_timeout", "range_read_timeout", "counter_write_timeout", "truncate_timeout", "cas_timeout", "other_timeout"
     };
     auto get_duration = [&] (const std::optional<sstring>& repr) -> std::optional<lowres_clock::duration> {
-        if (!repr || boost::algorithm::iequals(*repr, "null")) {
+        if (!repr) {
             return std::nullopt;
+        }
+        if (boost::algorithm::iequals(*repr, "null")) {
+            return qos::service_level_options::delete_marker;
         }
         data_value v = duration_type->deserialize(duration_type->from_string(*repr));
         cql_duration duration = static_pointer_cast<const duration_type_impl>(duration_type)->from_value(v);
@@ -30,7 +33,11 @@ void sl_prop_defs::validate() {
         if (duration.nanoseconds % 1'000'000 != 0) {
             throw exceptions::invalid_request_exception("Timeout values must be expressed in millisecond granularity");
         }
-        return std::make_optional(std::chrono::duration_cast<lowres_clock::duration>(std::chrono::nanoseconds(duration.nanoseconds)));
+        auto ret = std::chrono::duration_cast<lowres_clock::duration>(std::chrono::nanoseconds(duration.nanoseconds));
+        if (ret == qos::service_level_options::delete_marker) {
+            throw exceptions::invalid_request_exception(format("Timeout value {}ns is reserved and cannot be explicitly used", duration.nanoseconds));
+        }
+        return ret;
     };
 
     property_definitions::validate(timeout_props);
