@@ -36,6 +36,7 @@ future<::shared_ptr<cql_transport::messages::result_message>>
 create_service_level_statement::execute(service::storage_proxy &sp,
         service::query_state &state,
         const query_options &) const {
+    qos::service_level_options slo = _slo.replace_defaults(qos::service_level_options{});
     return state.get_service_level_controller().add_distributed_service_level(_service_level, _slo, _if_not_exists).then([] {
         using void_result_msg = cql_transport::messages::result_message::void_message;
         using result_msg = cql_transport::messages::result_message;
