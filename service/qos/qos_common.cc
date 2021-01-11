@@ -21,4 +21,18 @@
 
 #include "qos_common.hh"
 namespace qos {
+
+service_level_options service_level_options::replace_defaults(const service_level_options& other) const {
+    service_level_options ret = *this;
+    auto maybe_replace = [&ret, &other] (std::optional<lowres_clock::duration> service_level_options::*member) mutable {
+        if (ret.*member == delete_marker) {
+            ret.*member = std::nullopt;
+        } else if (!(ret.*member)) {
+            ret.*member = other.*member;
+        }
+    };
+    maybe_replace(&service_level_options::timeout);
+    return ret;
+}
+
 }

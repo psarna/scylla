@@ -36,7 +36,11 @@ namespace qos {
  *  a service level.
  */
 struct service_level_options {
+    static constexpr lowres_clock::duration delete_marker = lowres_clock::duration::max();
+
     std::optional<lowres_clock::duration> timeout = {};
+
+    service_level_options replace_defaults(const service_level_options& other) const;
 
     bool operator==(const service_level_options& other) const = default;
     bool operator!=(const service_level_options& other) const = default;
