@@ -36,23 +36,21 @@ namespace qos {
  *  a service level.
  */
 struct service_level_options {
-    std::optional<lowres_clock::duration> read_timeout;
-    std::optional<lowres_clock::duration> write_timeout;
-    std::optional<lowres_clock::duration> range_read_timeout;
-    std::optional<lowres_clock::duration> counter_write_timeout;
-    std::optional<lowres_clock::duration> truncate_timeout;
-    std::optional<lowres_clock::duration> cas_timeout;
-    std::optional<lowres_clock::duration> other_timeout;
+    static constexpr lowres_clock::duration delete_marker = lowres_clock::duration::max();
 
-    void replace_defaults(const service_level_options& other);
+    std::optional<lowres_clock::duration> read_timeout = {};
+    std::optional<lowres_clock::duration> write_timeout = {};
+    std::optional<lowres_clock::duration> range_read_timeout = {};
+    std::optional<lowres_clock::duration> counter_write_timeout = {};
+    std::optional<lowres_clock::duration> truncate_timeout = {};
+    std::optional<lowres_clock::duration> cas_timeout = {};
+    std::optional<lowres_clock::duration> other_timeout = {};
+
+    service_level_options replace_defaults(const service_level_options& other) const;
+
+    bool operator==(const service_level_options& other) const = default;
+    bool operator!=(const service_level_options& other) const = default;
 };
-
-/**
- * The service level options comparison operators helps to determine if
- * a change was introduced to the service level.
- */
-bool operator==(const service_level_options& lhs, const service_level_options& rhs);
-bool operator!=(const service_level_options& lhs, const service_level_options& rhs);
 
 using service_levels_info = std::map<sstring, service_level_options>;
 

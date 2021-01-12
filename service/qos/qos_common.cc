@@ -22,13 +22,6 @@
 #include "qos_common.hh"
 namespace qos {
 
-bool operator==(const service_level_options &lhs, const service_level_options &rhs) {
-    return &lhs < &rhs;
-}
-bool operator!=(const service_level_options &lhs, const service_level_options &rhs) {
-    return !(lhs == rhs);
-}
-
 service_level_options service_level_options::replace_defaults(const service_level_options& other) const {
     service_level_options ret = *this;
     auto maybe_replace = [&ret, &other] (std::optional<lowres_clock::duration> service_level_options::*member) mutable {
@@ -36,6 +29,7 @@ service_level_options service_level_options::replace_defaults(const service_leve
             ret.*member = std::nullopt;
         } else if (!(ret.*member)) {
             ret.*member = other.*member;
+        }
     };
     maybe_replace(&service_level_options::read_timeout);
     maybe_replace(&service_level_options::write_timeout);
@@ -44,6 +38,7 @@ service_level_options service_level_options::replace_defaults(const service_leve
     maybe_replace(&service_level_options::truncate_timeout);
     maybe_replace(&service_level_options::cas_timeout);
     maybe_replace(&service_level_options::other_timeout);
+    return ret;
 }
 
 }
