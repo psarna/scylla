@@ -66,6 +66,7 @@
 #include "locator/token_metadata.hh"
 #include "db/hints/host_filter.hh"
 #include "db/config.hh"
+#include "absl-flat_hash_map.hh"
 
 class reconcilable_result;
 class frozen_mutation_and_schema;
@@ -295,6 +296,11 @@ private:
             lw_shared_ptr<cdc::operation_result_tracker>> _mutate_stage;
     db::view::node_update_backlog& _max_view_update_backlog;
     std::unordered_map<gms::inet_address, view_update_backlog_timestamped> _view_update_backlogs;
+    struct last_seen_info {
+        clock_type::time_point last_responded = clock_type::time_point::min();
+        clock_type::time_point last_sent = clock_type::time_point::min();
+    };
+    flat_hash_map<gms::inet_address, last_seen_info> _last_seen;
 
     //NOTICE(sarna): This opaque pointer is here just to avoid moving write handler class definitions from .cc to .hh. It's slow path.
     class view_update_handlers_list;
@@ -644,6 +650,19 @@ public:
 
     scheduling_group_key get_stats_key() const {
         return _stats_key;
+    }
+
+    void mark_responded(const gms::inet_address& ep) {
+        _last_seen[ep].last_responded = clock_type::now();
+    }
+
+    void mark_sent(const gms::inet_address& ep) {
+        _last_seen[ep].last_sent = clock_type::now();
+    }
+
+    std::optional<last_seen_info> last_seen(const gms::inet_address& ep) const {
+        auto it = _last_seen.find(ep);
+        return it != _last_seen.end() ? std::make_optional(it->second) : std::nullopt;
     }
 
     static unsigned cas_shard(const schema& s, dht::token token);
