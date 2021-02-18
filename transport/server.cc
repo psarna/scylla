@@ -724,11 +724,24 @@ future<> cql_server::connection::process_request() {
         }
 
         auto fut = get_units(_server._memory_available, mem_estimate);
+        std::unique_ptr<timer<lowres_clock>> releaser;
+        ::shared_ptr<bool> timed_out;
         if (_server._memory_available.waiters()) {
+            //FIXME: Instead of 5, it would be nice to parse only the timeout value or get it from somewhere. Not trivial I suppose.
+            releaser.set_callback(lowres_clock::now() + std::chrono::seconds(5));
+            releaser.arm([this, timed_out, mem_estimate] { timed_out = ::make_shared<bool>(true); });
+            _server._memory_available.signal(mem_estimate);
             ++_server._stats.requests_blocked_memory;
         }
 
-        return fut.then([this, length = f.length, flags = f.flags, op, stream, tracing_requested] (semaphore_units<> mem_permit) {
+        return fut.then([this, length = f.length, flags = f.flags, op, stream, tracing_requested, releaser, timed_out] (semaphore_units<> mem_permit) {
+          if (timed_out) {
+              mem_permit.release();
+             return make_exception_future<>(
+                    exceptions::overloaded_exception("Request timed out while in the admission queue"));
+          } else {
+              releaser.cancel();
+          }
           return this->read_and_decompress_frame(length, flags).then([this, op, stream, tracing_requested, mem_permit = make_service_permit(std::move(mem_permit))] (fragmented_temporary_buffer buf) mutable {
 
             ++_server._stats.requests_served;
