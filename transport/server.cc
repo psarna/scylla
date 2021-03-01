@@ -622,10 +622,12 @@ future<> cql_server::connection::process_request() {
                     f.length, mem_estimate, _server._max_request_size)));
         }
 
-        if (_server._requests_serving > _server._max_concurrent_requests) {
-            ++_server._requests_shed;
-            return make_exception_future<>(
-                    exceptions::overloaded_exception(format("too many in-flight requests (configured via max_concurrent_requests_per_shard): {}", _server._requests_serving)));
+        if (_server.requests_serving > _server._max_concurrent_requests) {
+            ++_server.requests_shed;
+            return _read_buf.skip(f.length).then([this] {
+                return make_exception_future<>(
+                        exceptions::overloaded_exception(format("too many in-flight requests (configured via max_concurrent_requests_per_shard): {}", _server.requests_serving)));
+            });
         }
 
         auto fut = get_units(_server._memory_available, mem_estimate);
