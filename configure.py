@@ -1191,9 +1191,9 @@ warnings = ' '.join(warnings + ['-Wno-error=deprecated-declarations'])
 def clang_inline_threshold():
     if platform.machine() == 'aarch64':
         # we see miscompiles with 1200 and above with format("{}", uuid)
-        return 600
+        return 0
     else:
-        return 2500
+        return 0
 
 optimization_flags = [
     '--param inline-unit-growth=300', # gcc
