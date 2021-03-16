@@ -1,0 +1,19 @@
+name: Scylla build
+
+on:
+  pull_request:
+    branches: [ master, next ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: scylladb/scylla-toolchain:fedora-33-20201214
+    steps:
+    - uses: actions/checkout@v2
+    - name: Fetch submodules
+      run: git submodule update --init --recursive
+    - name: Configure
+      run: ./configure.py --mode dev --optimization-level dev=0
+    - name: Build
+      run: ninja -j4 dev-build
+
