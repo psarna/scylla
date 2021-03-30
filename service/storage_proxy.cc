@@ -3818,13 +3818,14 @@ db::read_repair_decision storage_proxy::new_read_repair_decision(const schema& s
         tracing::trace_state_ptr trace_state,
         const std::vector<gms::inet_address>& preferred_endpoints,
         bool& is_read_non_local,
-        service_permit permit) {
+        service_permit permit,
+        clock_type::time_point timeout) {
     const dht::token& token = pr.start()->value().token();
     keyspace& ks = _db.local().find_keyspace(schema->ks_name());
     speculative_retry::type retry_type = schema->speculative_retry().get_type();
     gms::inet_address extra_replica;
 
-    std::vector<gms::inet_address> all_replicas = get_live_sorted_endpoints(ks, token);
+    std::vector<gms::inet_address> all_replicas = get_live_sorted_endpoints_for_read(ks, token, timeout);
     // Check for a non-local read before heat-weighted load balancing
     // reordering of endpoints happens. The local endpoint, if
     // present, is always first in the list, as get_live_sorted_endpoints()
@@ -3954,6 +3955,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
     bool is_read_non_local = false;
 
     const auto tmptr = get_token_metadata_ptr();
+    auto timeout = query_options.timeout(*this);
     for (auto&& pr: partition_ranges) {
         if (!pr.is_singular()) {
             throw std::runtime_error("mixed singular and non singular range are not supported");
@@ -3966,7 +3968,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
 
         auto read_executor = get_read_executor(cmd, schema, std::move(pr), cl, repair_decision,
                                                query_options.trace_state, replicas, is_read_non_local,
-                                               query_options.permit);
+                                               query_options.permit, timeout);
 
         exec.emplace_back(read_executor, std::move(token_range));
     }
@@ -3979,7 +3981,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
 
     auto used_replicas = make_lw_shared<replicas_per_token_range>();
 
-    auto f = ::map_reduce(exec.begin(), exec.end(), [p = shared_from_this(), timeout = query_options.timeout(*this), used_replicas, tmptr] (
+    auto f = ::map_reduce(exec.begin(), exec.end(), [p = shared_from_this(), timeout, used_replicas, tmptr] (
                 std::pair<::shared_ptr<abstract_read_executor>, dht::token_range>& executor_and_token_range) {
         auto& rex = std::get<0>(executor_and_token_range);
         auto& token_range = std::get<1>(executor_and_token_range);
@@ -4053,7 +4055,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
 
     while (i != ranges.end()) {
         dht::partition_range& range = *i;
-        std::vector<gms::inet_address> live_endpoints = get_live_sorted_endpoints(ks, end_token(range));
+        std::vector<gms::inet_address> live_endpoints = get_live_sorted_endpoints_for_read(ks, end_token(range), timeout);
         std::vector<gms::inet_address> merged_preferred_replicas = preferred_replicas_for_range(*i);
         std::vector<gms::inet_address> filtered_endpoints = filter_for_query(cl, ks, live_endpoints, merged_preferred_replicas, pcf);
         std::vector<dht::token_range> merged_ranges{to_token_range(range)};
@@ -4066,7 +4068,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
         {
             const auto current_range_preferred_replicas = preferred_replicas_for_range(*i);
             dht::partition_range& next_range = *i;
-            std::vector<gms::inet_address> next_endpoints = get_live_sorted_endpoints(ks, end_token(next_range));
+            std::vector<gms::inet_address> next_endpoints = get_live_sorted_endpoints_for_read(ks, end_token(next_range), timeout);
             std::vector<gms::inet_address> next_filtered_endpoints = filter_for_query(cl, ks, next_endpoints, current_range_preferred_replicas, pcf);
 
             // Origin has this to say here:
@@ -4593,10 +4595,50 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
     co_return condition_met;
 }
 
+bool storage_proxy::is_likely_to_respond_in_time(const gms::inet_address& ep, clock_type::time_point timeout) {
+    if (fbu::is_me(ep)) {
+        return true;
+    }
+    if (auto last_seen_ep = last_seen(ep)) {
+        auto now = clock_type::now();
+        auto time_without_response = last_seen_ep->last_sent - last_seen_ep->last_responded;
+        auto time_left = timeout - now;
+        auto last_attempt = now - last_seen_ep->last_sent;
+        // If the node has never responded yet or there was no communication attempt for a long while,
+        // the node should be probed in case it becomes responsive
+        if (last_seen_ep->last_responded == clock_type::time_point::min() || last_attempt > time_left) {
+            return true;
+        }
+        if (time_without_response > time_left) {
+            static constexpr int granularity = 10'000;
+            static thread_local std::uniform_int_distribution dice(0, granularity);
+            // There's always a small chance of probing the replica in case it came back to life.
+            int fail_chance = std::min<long>((time_without_response.count() - time_left.count()) * granularity / time_left.count(), granularity - 1);
+            int roll = dice(_urandom);
+            if (roll < fail_chance) {
+                slogger.debug("Overload protection: speculatively disqualifying {} as a candidate for a read request with {}ms left until timeout, "
+                        "since it hasn't responded for at least {}ms", ep, time_left.count(), time_without_response.count());
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 std::vector<gms::inet_address> storage_proxy::get_live_endpoints(keyspace& ks, const dht::token& token) const {
     auto& rs = ks.get_replication_strategy();
     std::vector<gms::inet_address> eps = rs.get_natural_endpoints_without_node_being_replaced(token);
     auto itend = boost::range::remove_if(eps, std::not1(std::bind1st(std::mem_fn(&gms::gossiper::is_alive), &gms::get_local_gossiper())));
+    eps.erase(itend, eps.end());
+    return eps;
+}
+
+std::vector<gms::inet_address> storage_proxy::get_live_endpoints_for_read(keyspace& ks, const dht::token& token, clock_type::time_point timeout) {
+    auto& rs = ks.get_replication_strategy();
+    std::vector<gms::inet_address> eps = rs.get_natural_endpoints_without_node_being_replaced(token);
+    auto itend = boost::range::remove_if(eps, [this, timeout, &gossiper = gms::get_local_gossiper()] (const gms::inet_address& ep) {
+        return !gossiper.is_alive(ep) || !is_likely_to_respond_in_time(ep, timeout);
+    });
     eps.erase(itend, eps.end());
     return eps;
 }
@@ -4610,8 +4652,8 @@ void storage_proxy::sort_endpoints_by_proximity(std::vector<gms::inet_address>& 
     }
 }
 
-std::vector<gms::inet_address> storage_proxy::get_live_sorted_endpoints(keyspace& ks, const dht::token& token) const {
-    auto eps = get_live_endpoints(ks, token);
+std::vector<gms::inet_address> storage_proxy::get_live_sorted_endpoints_for_read(keyspace& ks, const dht::token& token, clock_type::time_point timeout) {
+    auto eps = get_live_endpoints_for_read(ks, token, timeout);
     sort_endpoints_by_proximity(eps);
     return eps;
 }
@@ -5262,11 +5304,17 @@ const db::hints::host_filter& storage_proxy::get_hints_host_filter() const {
     return _hints_manager.get_host_filter();
 }
 
-void storage_proxy::on_join_cluster(const gms::inet_address& endpoint) {};
+void storage_proxy::on_join_cluster(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
-void storage_proxy::on_leave_cluster(const gms::inet_address& endpoint) {};
+void storage_proxy::on_leave_cluster(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
-void storage_proxy::on_up(const gms::inet_address& endpoint) {};
+void storage_proxy::on_up(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
 void storage_proxy::retire_view_response_handlers(noncopyable_function<bool(const abstract_write_response_handler&)> filter_fun) {
     assert(thread::running_in_thread());
