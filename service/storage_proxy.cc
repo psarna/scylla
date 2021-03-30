@@ -3449,8 +3449,7 @@ protected:
             return _proxy->_messaging.send_read_mutation_data(netw::messaging_service::msg_addr{ep, 0}, timeout, *cmd, _partition_range).then([this, ep, sent_at](rpc::tuple<reconcilable_result, rpc::optional<cache_temperature>> result_and_hit_rate) {
                 auto&& [result, hit_rate] = result_and_hit_rate;
                 tracing::trace(_trace_state, "read_mutation_data: got response from /{}", ep);
-                clock_type::time_point now = clock_type::now();
-                _proxy->mark_responded(ep, now, now - sent_at);
+                _proxy->mark_responded(ep, clock_type::now() - sent_at);
                 return make_ready_future<rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature>>(rpc::tuple(make_foreign(::make_lw_shared<reconcilable_result>(std::move(result))), hit_rate.value_or(cache_temperature::invalid())));
             });
         }
@@ -3470,8 +3469,7 @@ protected:
             return _proxy->_messaging.send_read_data(netw::messaging_service::msg_addr{ep, 0}, timeout, *_cmd, _partition_range, opts.digest_algo).then([this, ep, sent_at](rpc::tuple<query::result, rpc::optional<cache_temperature>> result_hit_rate) {
                 auto&& [result, hit_rate] = result_hit_rate;
                 tracing::trace(_trace_state, "read_data: got response from /{}", ep);
-                clock_type::time_point now = clock_type::now();
-                _proxy->mark_responded(ep, now, now - sent_at);
+                _proxy->mark_responded(ep, clock_type::now() - sent_at);
                 return make_ready_future<rpc::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature>>(rpc::tuple(make_foreign(::make_lw_shared<query::result>(std::move(result))), hit_rate.value_or(cache_temperature::invalid())));
             });
         }
@@ -3491,8 +3489,7 @@ protected:
                     rpc::tuple<query::result_digest, rpc::optional<api::timestamp_type>, rpc::optional<cache_temperature>> digest_timestamp_hit_rate) {
                 auto&& [d, t, hit_rate] = digest_timestamp_hit_rate;
                 tracing::trace(_trace_state, "read_digest: got response from /{}", ep);
-                clock_type::time_point now = clock_type::now();
-                _proxy->mark_responded(ep, now, now - sent_at);
+                _proxy->mark_responded(ep, clock_type::now() - sent_at);
                 return make_ready_future<rpc::tuple<query::result_digest, api::timestamp_type, cache_temperature>>(rpc::tuple(d, t ? t.value() : api::missing_timestamp, hit_rate.value_or(cache_temperature::invalid())));
             });
         }
@@ -3504,8 +3501,7 @@ protected:
             return make_mutation_data_request(cmd, ep, timeout).then_wrapped([this, resolver, ep, sent_at] (future<rpc::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature>> f) {
                 try {
                     auto v = f.get0();
-                    clock_type::time_point now = clock_type::now();
-                    _proxy->mark_responded(ep, now, now - sent_at);
+                    _proxy->mark_responded(ep, clock_type::now() - sent_at);
                     _cf->set_hit_rate(ep, std::get<1>(v));
                     resolver->add_mutate_data(ep, std::get<0>(std::move(v)));
                     ++_proxy->get_stats().mutation_data_read_completed.get_ep_stat(ep);
@@ -3832,13 +3828,14 @@ db::read_repair_decision storage_proxy::new_read_repair_decision(const schema& s
         tracing::trace_state_ptr trace_state,
         const std::vector<gms::inet_address>& preferred_endpoints,
         bool& is_read_non_local,
-        service_permit permit) {
+        service_permit permit,
+        clock_type::time_point timeout) {
     const dht::token& token = pr.start()->value().token();
     keyspace& ks = _db.local().find_keyspace(schema->ks_name());
     speculative_retry::type retry_type = schema->speculative_retry().get_type();
     gms::inet_address extra_replica;
 
-    std::vector<gms::inet_address> all_replicas = get_live_sorted_endpoints(ks, token);
+    std::vector<gms::inet_address> all_replicas = get_live_sorted_endpoints_for_read(ks, token, cl, timeout);
     // Check for a non-local read before heat-weighted load balancing
     // reordering of endpoints happens. The local endpoint, if
     // present, is always first in the list, as get_live_sorted_endpoints()
@@ -3968,6 +3965,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
     bool is_read_non_local = false;
 
     const auto tmptr = get_token_metadata_ptr();
+    auto timeout = query_options.timeout(*this);
     for (auto&& pr: partition_ranges) {
         if (!pr.is_singular()) {
             throw std::runtime_error("mixed singular and non singular range are not supported");
@@ -3980,7 +3978,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
 
         auto read_executor = get_read_executor(cmd, schema, std::move(pr), cl, repair_decision,
                                                query_options.trace_state, replicas, is_read_non_local,
-                                               query_options.permit);
+                                               query_options.permit, timeout);
 
         exec.emplace_back(read_executor, std::move(token_range));
     }
@@ -3993,7 +3991,7 @@ storage_proxy::query_singular(lw_shared_ptr<query::read_command> cmd,
 
     auto used_replicas = make_lw_shared<replicas_per_token_range>();
 
-    auto f = ::map_reduce(exec.begin(), exec.end(), [p = shared_from_this(), timeout = query_options.timeout(*this), used_replicas, tmptr] (
+    auto f = ::map_reduce(exec.begin(), exec.end(), [p = shared_from_this(), timeout, used_replicas, tmptr] (
                 std::pair<::shared_ptr<abstract_read_executor>, dht::token_range>& executor_and_token_range) {
         auto& rex = std::get<0>(executor_and_token_range);
         auto& token_range = std::get<1>(executor_and_token_range);
@@ -4067,7 +4065,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
 
     while (i != ranges.end()) {
         dht::partition_range& range = *i;
-        std::vector<gms::inet_address> live_endpoints = get_live_sorted_endpoints(ks, end_token(range));
+        std::vector<gms::inet_address> live_endpoints = get_live_sorted_endpoints_for_read(ks, end_token(range), cl, timeout);
         std::vector<gms::inet_address> merged_preferred_replicas = preferred_replicas_for_range(*i);
         std::vector<gms::inet_address> filtered_endpoints = filter_for_query(cl, ks, live_endpoints, merged_preferred_replicas, pcf);
         std::vector<dht::token_range> merged_ranges{to_token_range(range)};
@@ -4080,7 +4078,7 @@ storage_proxy::query_partition_key_range_concurrent(storage_proxy::clock_type::t
         {
             const auto current_range_preferred_replicas = preferred_replicas_for_range(*i);
             dht::partition_range& next_range = *i;
-            std::vector<gms::inet_address> next_endpoints = get_live_sorted_endpoints(ks, end_token(next_range));
+            std::vector<gms::inet_address> next_endpoints = get_live_sorted_endpoints_for_read(ks, end_token(next_range), cl, timeout);
             std::vector<gms::inet_address> next_filtered_endpoints = filter_for_query(cl, ks, next_endpoints, current_range_preferred_replicas, pcf);
 
             // Origin has this to say here:
@@ -4607,10 +4605,67 @@ future<bool> storage_proxy::cas(schema_ptr schema, shared_ptr<cas_request> reque
     co_return condition_met;
 }
 
+bool storage_proxy::is_likely_to_respond_in_time(const gms::inet_address& ep, clock_type::time_point timeout) {
+    clock_type::time_point now = clock_type::now();
+    if (timeout <= now) {
+        return false;
+    }
+    if (fbu::is_me(ep)) {
+        return true;
+    }
+    if (auto last_seen_ep = last_seen(ep)) {
+        clock_type::duration time_left = timeout - now;
+        if (last_seen_ep->last_attempt == last_seen_info::unknown || last_seen_ep->last_sent_without_response == last_seen_info::unknown) {
+            return true;
+        }
+        clock_type::duration time_since_last_attempt = now - last_seen_ep->last_attempt;
+        if (time_since_last_attempt > time_left) {
+            return true;
+        }
+        clock_type::duration time_without_response = now - last_seen_ep->last_sent_without_response;
+        // Response time is estimated as the maximum of two values:
+        // - response time of the previous request
+        // - time without getting any response since the last time the coordinator started trying to communicate
+        //   with the replica
+        clock_type::duration estimated_response_time = std::max(last_seen_ep->last_rtt, time_without_response);
+        if (estimated_response_time > time_left) {
+            static constexpr int granularity = 10'000;
+            static thread_local std::uniform_int_distribution dice(0, granularity);
+            // There's always a small chance of probing the replica in case it came back to life.
+            int fail_chance = std::min<long>((estimated_response_time.count() - time_left.count()) * granularity / time_left.count(), granularity - 1);
+            int roll = dice(_urandom);
+            if (roll < fail_chance) {
+                slogger.debug("Overload protection: speculatively disqualifying {} as a candidate for a read request with {}ms left until timeout, "
+                        "since it hasn't responded for at least {}ms", ep, time_left.count(), estimated_response_time.count());
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 std::vector<gms::inet_address> storage_proxy::get_live_endpoints(keyspace& ks, const dht::token& token) const {
     auto& rs = ks.get_replication_strategy();
     std::vector<gms::inet_address> eps = rs.get_natural_endpoints_without_node_being_replaced(token);
     auto itend = boost::range::remove_if(eps, std::not1(std::bind1st(std::mem_fn(&gms::gossiper::is_alive), &gms::get_local_gossiper())));
+    eps.erase(itend, eps.end());
+    return eps;
+}
+
+std::vector<gms::inet_address> storage_proxy::get_live_endpoints_for_read(keyspace& ks, const dht::token& token, db::consistency_level cl, clock_type::time_point timeout) {
+    auto& rs = ks.get_replication_strategy();
+    std::vector<gms::inet_address> eps = rs.get_natural_endpoints_without_node_being_replaced(token);
+    auto itend = boost::range::remove_if(eps, [this, timeout, &gossiper = gms::get_local_gossiper()] (const gms::inet_address& ep) {
+        return !gossiper.is_alive(ep) || !is_likely_to_respond_in_time(ep, timeout);
+    });
+    // In the unlikely case when too many endpoints were disualified and it's impossible to fulfill
+    // the consistency level, bring back the endpoints which were "not likely to respond in time"
+    // and only remove the dead ones
+    if (!db::is_sufficient_live_nodes(cl, ks, eps.begin(), itend)) [[unlikely]] {
+        itend = std::remove_if(itend, eps.end(), [&gossiper = gms::get_local_gossiper()] (const gms::inet_address& ep) {
+            return !gossiper.is_alive(ep);
+        });
+    }
     eps.erase(itend, eps.end());
     return eps;
 }
@@ -4624,8 +4679,8 @@ void storage_proxy::sort_endpoints_by_proximity(std::vector<gms::inet_address>& 
     }
 }
 
-std::vector<gms::inet_address> storage_proxy::get_live_sorted_endpoints(keyspace& ks, const dht::token& token) const {
-    auto eps = get_live_endpoints(ks, token);
+std::vector<gms::inet_address> storage_proxy::get_live_sorted_endpoints_for_read(keyspace& ks, const dht::token& token, db::consistency_level cl, clock_type::time_point timeout) {
+    auto eps = get_live_endpoints_for_read(ks, token, cl, timeout);
     sort_endpoints_by_proximity(eps);
     return eps;
 }
@@ -5295,11 +5350,17 @@ std::optional<storage_proxy::last_seen_info> storage_proxy::last_seen(const gms:
     return it != _last_seen.end() ? std::make_optional(it->second) : std::nullopt;
 }
 
-void storage_proxy::on_join_cluster(const gms::inet_address& endpoint) {};
+void storage_proxy::on_join_cluster(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
-void storage_proxy::on_leave_cluster(const gms::inet_address& endpoint) {};
+void storage_proxy::on_leave_cluster(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
-void storage_proxy::on_up(const gms::inet_address& endpoint) {};
+void storage_proxy::on_up(const gms::inet_address& endpoint) {
+    _last_seen.erase(endpoint);
+};
 
 void storage_proxy::retire_view_response_handlers(noncopyable_function<bool(const abstract_write_response_handler&)> filter_fun) {
     assert(thread::running_in_thread());
