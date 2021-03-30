@@ -1690,6 +1690,11 @@ void storage_proxy_stats::stats::register_stats() {
                        sm::description("number of errors during forwarding mutations to other replica Nodes"),
                        {storage_proxy_stats::current_scheduling_group_label()}),
 
+        sm::make_total_operations("live_endpoints_speculatively_omitted_for_reads", live_endpoints_speculatively_omitted_for_reads,
+                       sm::description("number of endpoints which were not marked as down, but "
+                                "speculatively omitted, because they were not likely to respond within deadline"),
+                       {storage_proxy_stats::current_scheduling_group_label()}),
+
         sm::make_total_operations("reads", replica_data_reads,
                        sm::description("number of remote data read requests this Node received"),
                        {storage_proxy_stats::current_scheduling_group_label(), storage_proxy_stats::op_type_label("data")}),
@@ -4616,6 +4621,7 @@ bool storage_proxy::is_likely_to_respond_in_time(const gms::inet_address& ep, cl
             int fail_chance = std::min<long>((time_without_response.count() - time_left.count()) * granularity / time_left.count(), granularity - 1);
             int roll = dice(_urandom);
             if (roll < fail_chance) {
+                _stats.
                 slogger.debug("Overload protection: speculatively disqualifying {} as a candidate for a read request with {}ms left until timeout, "
                         "since it hasn't responded for at least {}ms", ep, time_left.count(), time_without_response.count());
                 return false;

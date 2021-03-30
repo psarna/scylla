@@ -161,6 +161,11 @@ struct stats : public write_stats {
     uint64_t forwarded_mutations = 0;
     uint64_t forwarding_errors = 0;
 
+    // number of endpoints which were not marked as down, but
+    // speculatively omitted, because they were not likely to respond
+    // within deadline
+    uint64_t live_endpoints_speculatively_omitted_for_reads = 0;
+
     // number of read requests received as a replica
     uint64_t replica_data_reads = 0;
     uint64_t replica_digest_reads = 0;
