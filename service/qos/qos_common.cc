@@ -35,4 +35,17 @@ service_level_options service_level_options::replace_defaults(const service_leve
     return ret;
 }
 
+service_level_options service_level_options::merge_with(const service_level_options& other) const {
+    service_level_options ret = *this;
+    auto min_of = [&ret, &other] (std::optional<lowres_clock::duration> service_level_options::*member) mutable {
+        if (!(ret.*member)) {
+            ret.*member = other.*member;
+        } else if (other.*member) {
+            ret.*member = std::min(*(ret.*member), *(other.*member));
+        }
+    };
+    min_of(&service_level_options::timeout);
+    return ret;
+}
+
 }
