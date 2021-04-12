@@ -1621,6 +1621,7 @@ property[cql3::statements::property_definitions& props]
 propertyValue returns [sstring str]
     : c=constant           { $str = c->get_raw_text(); }
     | u=unreserved_keyword { $str = u; }
+    | K_NULL { $str = "null"; }
     ;
 
 relationType returns [cql3::expr::oper_t op]
