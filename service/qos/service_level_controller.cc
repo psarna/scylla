@@ -102,72 +102,68 @@ future<> service_level_controller::stop() {
 }
 
 future<> service_level_controller::update_service_levels_from_distributed_data() {
-
     if (!_sl_data_accessor) {
-        return make_ready_future();
+        co_return;
     }
-
     if (this_shard_id() != global_controller) {
-        return make_ready_future();
+        co_return;
     }
 
-    return with_semaphore(_global_controller_db->notifications_serializer, 1, [this] () {
-        return async([this] () {
-            service_levels_info service_levels = _sl_data_accessor->get_service_levels().get0();
-            service_levels_info service_levels_for_add_or_update;
-            service_levels_info service_levels_for_delete;
+    auto units = co_await get_units(_global_controller_db->notifications_serializer, 1);
 
-            auto current_it = _service_levels_db.begin();
-            auto new_state_it = service_levels.begin();
+    service_levels_info service_levels = co_await _sl_data_accessor->get_service_levels();
+    service_levels_info service_levels_for_add_or_update;
+    service_levels_info service_levels_for_delete;
 
-            // we want to detect 3 kinds of objects in one pass -
-            // 1. new service levels that have been added to the distributed keyspace
-            // 2. existing service levels that have changed
-            // 3. removed service levels
-            // this loop is batching together add/update operation and remove operation
-            // then they are all executed together.The reason for this is to allow for
-            // firstly delete all that there is to be deleted and only then adding new
-            // service levels.
-            while (current_it != _service_levels_db.end() && new_state_it != service_levels.end()) {
-                if (current_it->first == new_state_it->first) {
-                    //the service level exists on both the cureent and new state.
-                    if (current_it->second.slo != new_state_it->second) {
-                        // The service level configuration is different
-                        // in the new state and the old state, meaning it needs to be updated.
-                        service_levels_for_add_or_update.insert(*new_state_it);
-                    }
-                    current_it++;
-                    new_state_it++;
-                } else if (current_it->first < new_state_it->first) {
-                    //The service level does not exists in the new state so it needs to be
-                    //removed, but only if it is not static since static configurations dont
-                    //come from the distributed keyspace but from code.
-                    if (!current_it->second.is_static) {
-                        service_levels_for_delete.emplace(current_it->first, current_it->second.slo);
-                    }
-                    current_it++;
-                } else { /*new_it->first < current_it->first */
-                    // The service level exits in the new state but not in the old state
-                    // so it needs to be added.
-                    service_levels_for_add_or_update.insert(*new_state_it);
-                    new_state_it++;
-                }
+    auto current_it = _service_levels_db.begin();
+    auto new_state_it = service_levels.begin();
+
+    // we want to detect 3 kinds of objects in one pass -
+    // 1. new service levels that have been added to the distributed keyspace
+    // 2. existing service levels that have changed
+    // 3. removed service levels
+    // this loop is batching together add/update operation and remove operation
+    // then they are all executed together.The reason for this is to allow for
+    // firstly delete all that there is to be deleted and only then adding new
+    // service levels.
+    while (current_it != _service_levels_db.end() && new_state_it != service_levels.end()) {
+        if (current_it->first == new_state_it->first) {
+            //the service level exists on both the cureent and new state.
+            if (current_it->second.slo != new_state_it->second) {
+                // The service level configuration is different
+                // in the new state and the old state, meaning it needs to be updated.
+                service_levels_for_add_or_update.insert(*new_state_it);
             }
-
-            for (; current_it != _service_levels_db.end(); current_it++) {
+            current_it++;
+            new_state_it++;
+        } else if (current_it->first < new_state_it->first) {
+            //The service level does not exists in the new state so it needs to be
+            //removed, but only if it is not static since static configurations dont
+            //come from the distributed keyspace but from code.
+            if (!current_it->second.is_static) {
                 service_levels_for_delete.emplace(current_it->first, current_it->second.slo);
             }
-            std::copy(new_state_it, service_levels.end(), std::inserter(service_levels_for_add_or_update,
-                    service_levels_for_add_or_update.end()));
+            current_it++;
+        } else { /*new_it->first < current_it->first */
+            // The service level exits in the new state but not in the old state
+            // so it needs to be added.
+            service_levels_for_add_or_update.insert(*new_state_it);
+            new_state_it++;
+        }
+    }
 
-            for (auto&& sl : service_levels_for_delete) {
-                do_remove_service_level(sl.first, false).get();
-            }
-            for (auto&& sl : service_levels_for_add_or_update) {
-                do_add_service_level(sl.first, sl.second).get();
-            }
-        });
-    });
+    for (; current_it != _service_levels_db.end(); current_it++) {
+        service_levels_for_delete.emplace(current_it->first, current_it->second.slo);
+    }
+    std::copy(new_state_it, service_levels.end(), std::inserter(service_levels_for_add_or_update,
+            service_levels_for_add_or_update.end()));
+
+    for (auto&& sl : service_levels_for_delete) {
+        co_await do_remove_service_level(sl.first, false);
+    }
+    for (auto&& sl : service_levels_for_add_or_update) {
+        co_await do_add_service_level(sl.first, sl.second);
+    }
 }
 
 future<sstring> service_level_controller::find_service_level(auth::role_set roles) {
