@@ -133,6 +133,8 @@ bool
 is_sufficient_live_nodes(consistency_level cl,
                          keyspace& ks,
                          const std::vector<gms::inet_address>& live_endpoints);
+bool is_sufficient_live_nodes(consistency_level cl, keyspace& ks, const std::vector<gms::inet_address>::const_iterator& begin_it,
+        const std::vector<gms::inet_address>::const_iterator& end_it);
 
 template<typename Range, typename PendingRange>
 inline bool assure_sufficient_live_nodes_each_quorum(
