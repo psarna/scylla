@@ -33,6 +33,19 @@
 #include "schema_builder.hh"
 #include "release.hh"
 #include <fstream>
+#include "alternator/executor.hh"
+#include "alternator/rmw_operation.hh"
+#include "alternator/tags_extension.hh"
+#include "utils/rjson.hh"
+#include "cql3/query_processor.hh"
+#include "service/storage_service.hh"
+#include "service/storage_proxy.hh"
+#include "cdc/log.hh"
+#include "cdc/metadata.hh"
+#include "cdc/generation.hh"
+#include "db/system_distributed_keyspace.hh"
+#include "db/config.hh"
+#include "db/extensions.hh"
 
 static const sstring table_name = "cf";
 
@@ -65,8 +78,10 @@ static void execute_counter_update_for_key(cql_test_env& env, const bytes& key) 
 
 struct test_config {
     enum class run_mode { read, write, del };
+    enum class frontend_type { cql, alternator };
 
     run_mode mode;
+    frontend_type frontend;
     unsigned partitions;
     unsigned concurrency;
     bool query_single_key;
@@ -85,10 +100,19 @@ std::ostream& operator<<(std::ostream& os, const test_config::run_mode& m) {
     abort();
 }
 
+std::ostream& operator<<(std::ostream& os, const test_config::frontend_type& f) {
+    switch (f) {
+        case test_config::frontend_type::cql: return os << "cql";
+        case test_config::frontend_type::alternator: return os << "alternator";
+    }
+    abort();
+}
+
 std::ostream& operator<<(std::ostream& os, const test_config& cfg) {
     return os << "{partitions=" << cfg.partitions
            << ", concurrency=" << cfg.concurrency
            << ", mode=" << cfg.mode
+           << ", frontend=" << cfg.frontend
            << ", query_single_key=" << (cfg.query_single_key ? "yes" : "no")
            << ", counters=" << (cfg.counters ? "yes" : "no")
            << "}";
@@ -110,8 +134,12 @@ static void create_partitions(cql_test_env& env, test_config& cfg) {
     }
 }
 
+static int64_t make_random_seq(test_config& cfg) {
+    return cfg.query_single_key ? 0 : tests::random::get_int<uint64_t>(cfg.partitions - 1);
+}
+
 static bytes make_random_key(test_config& cfg) {
-    return make_key(cfg.query_single_key ? 0 : tests::random::get_int<uint64_t>(cfg.partitions - 1));
+    return make_key(make_random_seq(cfg));
 }
 
 static std::vector<perf_result> test_read(cql_test_env& env, test_config& cfg) {
@@ -171,7 +199,234 @@ static schema_ptr make_counter_schema(std::string_view ks_name) {
             .build();
 }
 
-static std::vector<perf_result> do_test(cql_test_env& env, test_config& cfg) {
+static void create_alternator_table(service::client_state& state, alternator::executor& executor) {
+    executor.create_table(state, tracing::trace_state_ptr(), empty_service_permit(), rjson::parse(
+        R"(
+            {
+                "AttributeDefinitions": [{
+                        "AttributeName": "p",
+                        "AttributeType": "S"
+                    }
+                ],
+                "TableName": "alternator_table",
+                "BillingMode": "PAY_PER_REQUEST",
+                "KeySchema": [{
+                        "AttributeName": "p",
+                        "KeyType": "HASH"
+                    }
+                ]
+            }
+        )"
+    )).get();
+}
+
+static void execute_alternator_update_for_key(service::client_state& state, alternator::executor& executor, int64_t sequence) {
+    std::string prefix = R"(
+        {
+            "TableName": "alternator_table",
+            "Key": {
+                "p": {
+                    "S": ")";
+     std::string postfix = R"("
+                }
+            },
+            "UpdateExpression": "set C0 = :C0, C1 = :C1, C2 = :C2, C3 = :C3, C4 = :C4",
+            "ExpressionAttributeValues": {
+                ":C0": {
+                    "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                },
+                ":C1": {
+                    "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                },
+                ":C2": {
+                    "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                },
+                ":C3": {
+                    "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                },
+                ":C4": {
+                    "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                }
+            },
+            "ReturnValues": "NONE"
+        }
+    )";
+    auto key = std::to_string(sequence);
+    // Chunked content is used to minimize string copying, and thus extra allocations
+    rjson::chunked_content content;
+    content.reserve(3);
+    content.emplace_back(prefix.data(), prefix.size(), deleter{});
+    content.emplace_back(key.data(), key.size(), deleter{});
+    content.emplace_back(postfix.data(), postfix.size(), deleter{});
+    executor.update_item(state, tracing::trace_state_ptr(), empty_service_permit(), rjson::parse(std::move(content))).get();
+};
+
+static void create_alternator_partitions(service::client_state& state, noncopyable_function<void()> flush_memtables,
+        alternator::executor& executor, test_config& cfg) {
+    std::cout << "Creating " << cfg.partitions << " partitions..." << std::endl;
+    for (unsigned sequence = 0; sequence < cfg.partitions; ++sequence) {
+        execute_alternator_update_for_key(state, executor, sequence);
+    }
+
+    if (cfg.flush_memtables) {
+        flush_memtables();
+    }
+}
+
+static std::vector<perf_result> test_alternator_read(service::client_state& state, noncopyable_function<void()> flush_memtables,
+        alternator::executor& executor, test_config& cfg) {
+    create_alternator_partitions(state, std::move(flush_memtables), executor, cfg);
+    std::string prefix = R"(
+        {
+            "TableName": "alternator_table",
+            "Key": {
+                "p": {
+                    "S": ")";
+    std::string postfix = R"("
+                    }
+                },
+                "ConsistentRead": false,
+                "ReturnConsumedCapacity": "TOTAL"
+            }
+        )";
+    return time_parallel([&] {
+        auto key = std::to_string(make_random_seq(cfg));
+        // Chunked content is used to minimize string copying, and thus extra allocations
+        rjson::chunked_content content;
+        content.reserve(3);
+        content.emplace_back(prefix.data(), prefix.size(), deleter{});
+        content.emplace_back(key.data(), key.size(), deleter{});
+        content.emplace_back(postfix.data(), postfix.size(), deleter{});
+        return executor.get_item(state, tracing::trace_state_ptr(), empty_service_permit(), rjson::parse(std::move(content))).discard_result();
+    }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard);
+}
+
+static std::vector<perf_result> test_alternator_write(service::client_state& state, alternator::executor& executor, test_config& cfg) {
+    return time_parallel([&] {
+        std::string prefix = R"(
+            {
+                "TableName": "alternator_table",
+                "Key": {
+                    "p": {
+                        "S": ")";
+        std::string postfix = R"("
+                    }
+                },
+                "UpdateExpression": "set C0 = :C0, C1 = :C1, C2 = :C2, C3 = :C3, C4 = :C4",
+                "ExpressionAttributeValues": {
+                    ":C0": {
+                        "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    },
+                    ":C1": {
+                        "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    },
+                    ":C2": {
+                        "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    },
+                    ":C3": {
+                        "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    },
+                    ":C4": {
+                        "S": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    }
+                },
+                "ReturnValues": "NONE"
+            }
+        )";
+        auto key = std::to_string(make_random_seq(cfg));
+        // Chunked content is used to minimize string copying, and thus extra allocations
+        rjson::chunked_content content;
+        content.reserve(3);
+        content.emplace_back(prefix.data(), prefix.size(), deleter{});
+        content.emplace_back(key.data(), key.size(), deleter{});
+        content.emplace_back(postfix.data(), postfix.size(), deleter{});
+        return executor.update_item(state, tracing::trace_state_ptr(), empty_service_permit(), rjson::parse(std::move(content))).discard_result();
+    }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard);
+}
+
+static std::vector<perf_result> test_alternator_delete(service::client_state& state, noncopyable_function<void()> flush_memtables,
+        alternator::executor& executor, test_config& cfg) {
+    create_alternator_partitions(state, std::move(flush_memtables), executor, cfg);
+    return time_parallel([&] {
+        std::string json = R"(
+            {
+                "TableName": "alternator_table",
+                "Key": {
+                    "p": {
+                        "S": ")" + std::to_string(make_random_seq(cfg)) + R"("
+                    }
+                },
+                "ReturnValues": "NONE"
+            }
+        )";
+        return executor.delete_item(state, tracing::trace_state_ptr(), empty_service_permit(), rjson::parse(json)).discard_result();
+    }, cfg.concurrency, cfg.duration_in_seconds, cfg.operations_per_shard);
+}
+
+static std::vector<perf_result> do_alternator_test(service::client_state& state,
+        sharded<cql3::query_processor>& qp,
+        sharded<service::migration_manager>& mm,
+        test_config& cfg) {
+    assert(cfg.frontend == test_config::frontend_type::alternator);
+
+    sharded<alternator::executor> executor;
+    sharded<db::system_distributed_keyspace> dummy_sdks;
+    sharded<cdc::metadata> dummy_cdc_metadata;
+
+    smp_service_group_config c;
+    c.max_nonlocal_requests = 5000;
+    smp_service_group ssg = create_smp_service_group(c).get0();
+    auto& proxy = qp.local().proxy().container();
+    auto flush_memtables = [&proxy] {
+        std::cout << "Flushing partitions..." << std::endl;
+        proxy.local().get_db().invoke_on_all(&database::flush_all_memtables).get();
+    };
+    dummy_sdks.start(std::ref(qp), std::ref(mm), std::ref(proxy)).get();
+    dummy_cdc_metadata.start().get();
+    executor.start(std::ref(proxy),
+            std::ref(mm),
+            // parameters below are only touched by alternator streams;
+            //  not really interesting for this use case
+            std::ref(dummy_sdks),
+            std::ref(service::get_storage_service()),
+            std::ref(dummy_cdc_metadata),
+            // end-of-streams-parameters
+            ssg).get();
+    // Use LWT only for read-modify-write requests
+    // TODO: allow configuring custom write isolation modes
+    alternator::rmw_operation::set_default_write_isolation("o");
+    std::cout << "Started alternator executor" << std::endl;
+    auto stop_sdks = defer([&] {
+        dummy_sdks.stop().get();
+    });
+    auto stop_cdc = defer([&] {
+        dummy_cdc_metadata.stop().get();
+    });
+    auto stop_alternator = defer([&] {
+        executor.stop().get();
+    });
+
+    try {
+        create_alternator_table(state, executor.local());
+
+        switch (cfg.mode) {
+        case test_config::run_mode::read:
+            return test_alternator_read(state, std::move(flush_memtables), executor.local(), cfg);
+        case test_config::run_mode::write:
+            return test_alternator_write(state, executor.local(), cfg);
+        case test_config::run_mode::del:
+            return test_alternator_delete(state, std::move(flush_memtables), executor.local(), cfg);
+        };
+    } catch (const alternator::api_error& e) {
+        std::cout << "Alternator API error: " << e._msg << std::endl;
+        throw;
+    }
+    abort();
+}
+
+static std::vector<perf_result> do_cql_test(cql_test_env& env, test_config& cfg) {
+    assert(cfg.frontend == test_config::frontend_type::cql);
+
     std::cout << "Running test with config: " << cfg << std::endl;
     env.create_table([&cfg] (auto ks_name) {
         if (cfg.counters) {
@@ -272,6 +527,7 @@ int main(int argc, char** argv) {
         ("counters", "test counters")
         ("flush", "flush memtables before test")
         ("json-result", bpo::value<std::string>(), "name of the json result file")
+        ("alternator", "use alternator frontend instead of CQL")
         ;
 
     set_abort_on_internal_error(true);
@@ -282,7 +538,11 @@ int main(int argc, char** argv) {
         std::cout << "random-seed=" << seed << '\n';
         return smp::invoke_on_all([seed] {
             seastar::testing::local_random_engine.seed(seed + this_shard_id());
-        }).then([&app] {
+        }).then([&app] () -> future<> {
+            auto ext = std::make_shared<db::extensions>();
+            ext->add_schema_extension<alternator::tags_extension>(alternator::tags_extension::NAME);
+            auto db_cfg = ::make_shared<db::config>(ext);
+            cql_test_config cfg(db_cfg);
           return do_with_cql_env_thread([&app] (auto&& env) {
             auto cfg = test_config();
             cfg.partitions = app.configuration()["partitions"].as<unsigned>();
@@ -298,10 +558,17 @@ int main(int argc, char** argv) {
             } else {
                 cfg.mode = test_config::run_mode::read;
             };
+            if (app.configuration().contains("alternator")) {
+                cfg.frontend = test_config::frontend_type::alternator;
+            } else {
+                cfg.frontend = test_config::frontend_type::cql;
+            }
             if (app.configuration().contains("operations-per-shard")) {
                 cfg.operations_per_shard = app.configuration()["operations-per-shard"].as<unsigned>();
             }
-            auto results = do_test(env, cfg);
+            auto results = cfg.frontend == test_config::frontend_type::cql
+                    ? do_cql_test(env, cfg)
+                    : do_alternator_test(env.local_client_state(), env.qp(), env.migration_manager(), cfg);
 
             auto compare_throughput = [] (perf_result a, perf_result b) { return a.throughput < b.throughput; };
             std::sort(results.begin(), results.end(), compare_throughput);
@@ -320,7 +587,7 @@ int main(int argc, char** argv) {
             if (app.configuration().contains("json-result")) {
                 write_json_result(app.configuration()["json-result"].as<std::string>(), cfg, median_result, mad, max, min);
             }
-          });
+          }, std::move(cfg));
         });
     });
 }
