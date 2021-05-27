@@ -164,7 +164,8 @@ system_distributed_keyspace::system_distributed_keyspace(cql3::query_processor& 
 static future<> add_new_columns_if_missing(database& db, ::service::migration_manager& mm) noexcept {
     static thread_local std::pair<std::string_view, data_type> new_columns[] {
         {"timeout", duration_type},
-        {"workload_type", utf8_type}
+        {"workload_type", utf8_type},
+        {"max_concurrent_requests", long_type}
     };
     try {
         auto schema = db.find_schema(system_distributed_keyspace::NAME, system_distributed_keyspace::SERVICE_LEVELS);
@@ -183,7 +184,7 @@ static future<> add_new_columns_if_missing(database& db, ::service::migration_ma
             return make_ready_future<>();
         }
         schema_ptr table = b.build();
-        return mm.announce_column_family_update(table, false, {}, api::timestamp_type(1)).handle_exception([] (const std::exception_ptr&) {});
+        return mm.announce_column_family_update(table, false, {}, api::timestamp_type(2)).handle_exception([] (const std::exception_ptr&) {});
     } catch (...) {
         dlogger.warn("Failed to update options column in the role attributes table: {}", std::current_exception());
         return make_ready_future<>();
@@ -585,9 +586,14 @@ future<qos::service_levels_info> system_distributed_keyspace::get_service_levels
         for (auto &&row : *result_set) {
             auto service_level_name = row.get_as<sstring>("service_level");
             auto workload = qos::service_level_options::parse_workload_type(row.get_opt<sstring>("workload_type").value_or(""));
+            int64_t max_concurrent = std::numeric_limits<int64_t>::max();
+            if (auto max_concurrent_str = row.get_opt<sstring>("max_concurrent_requests"); max_concurrent_str) {
+                max_concurrent = std::strtoll(max_concurrent_str->begin(), nullptr, 10);
+            }
             qos::service_level_options slo{
                 .timeout = get_duration(row, "timeout"),
                 .workload = workload.value_or(qos::service_level_options::workload_type::unspecified),
+                .max_concurrent_requests = max_concurrent,
             };
             service_levels.emplace(service_level_name, slo);
         }
@@ -604,9 +610,14 @@ future<qos::service_levels_info> system_distributed_keyspace::get_service_level(
             try {
                 auto &&row = result_set->one();
                 auto workload = qos::service_level_options::parse_workload_type(row.get_opt<sstring>("workload_type").value_or(""));
+                int64_t max_concurrent = std::numeric_limits<int64_t>::max();
+                if (auto max_concurrent_str = row.get_opt<sstring>("max_concurrent_requests"); max_concurrent_str) {
+                    max_concurrent = std::strtoll(max_concurrent_str->begin(), nullptr, 10);
+                }
                 qos::service_level_options slo{
                     .timeout = get_duration(row, "timeout"),
                     .workload = workload.value_or(qos::service_level_options::workload_type::unspecified),
+                    .max_concurrent_requests = max_concurrent,
                 };
                 service_levels.emplace(service_level_name, slo);
             } catch (...) {

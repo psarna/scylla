@@ -152,6 +152,7 @@ private:
     timeout_config _timeout_config;
 
     workload_type _workload_type = workload_type::unspecified;
+    int64_t _max_concurrent_requests = std::numeric_limits<int64_t>::max();
 
 public:
     struct internal_tag {};

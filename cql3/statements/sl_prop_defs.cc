@@ -31,7 +31,7 @@ namespace statements {
 
 void sl_prop_defs::validate() {
     static std::set<sstring> timeout_props {
-        "timeout", "workload_type"
+        "timeout", "workload_type", "max_concurrent_requests"
     };
     auto get_duration = [&] (const std::optional<sstring>& repr) -> qos::service_level_options::timeout_type {
         if (!repr) {
@@ -50,7 +50,7 @@ void sl_prop_defs::validate() {
         }
         if (duration.nanoseconds < 0) {
             throw exceptions::invalid_request_exception("Timeout values must be nonnegative");
-        }
+        }   
         return std::chrono::duration_cast<lowres_clock::duration>(std::chrono::nanoseconds(duration.nanoseconds));
     };
 
@@ -64,6 +64,15 @@ void sl_prop_defs::validate() {
         }
         _slo.workload = *workload;
     }
+    int64_t max_concurrent = std::numeric_limits<int64_t>::max();
+    auto maybe_max_concurrent = get_simple("max_concurrent_requests");
+    if (maybe_max_concurrent) {
+        max_concurrent = value_cast<int64_t>(long_type->deserialize(long_type->from_string(*maybe_max_concurrent)));
+        if (max_concurrent <= 0) {
+            throw exceptions::invalid_request_exception("Max concurrent requests per shard must be nonnegative");
+        }
+    }
+    _slo.max_concurrent_requests = max_concurrent;
 }
 
 qos::service_level_options sl_prop_defs::get_service_level_options() const {

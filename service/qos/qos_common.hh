@@ -52,6 +52,7 @@ struct service_level_options {
     using timeout_type = std::variant<unset_marker, delete_marker, lowres_clock::duration>;
     timeout_type timeout = unset_marker{};
     workload_type workload = workload_type::unspecified;
+    int64_t max_concurrent_requests = std::numeric_limits<int64_t>::max();
 
     service_level_options replace_defaults(const service_level_options& other) const;
     // Merges the values of two service level options. The semantics depends

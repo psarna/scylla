@@ -21,7 +21,7 @@
 
 #include "qos_common.hh"
 #include "utils/overloaded_functor.hh"
-
+#include "log.hh"
 namespace qos {
 
 service_level_options service_level_options::replace_defaults(const service_level_options& default_values) const {
@@ -42,6 +42,12 @@ service_level_options service_level_options::replace_defaults(const service_leve
     if (ret.workload == workload_type::unspecified) {
         ret.workload = default_values.workload;
     }
+    static logging::logger srn("SRN");
+    srn.warn("retmax {}; defmax {}", ret.max_concurrent_requests, default_values.max_concurrent_requests);
+    if (ret.max_concurrent_requests == std::numeric_limits<int64_t>::max()) {
+        ret.max_concurrent_requests = default_values.max_concurrent_requests;
+    }
+    srn.warn("endup {}", ret.max_concurrent_requests);
     return ret;
 }
 
@@ -66,6 +72,7 @@ service_level_options service_level_options::merge_with(const service_level_opti
     } else {
         ret.workload = std::min(ret.workload, other.workload);
     }
+    ret.max_concurrent_requests = std::min(ret.max_concurrent_requests, other.max_concurrent_requests);
     return ret;
 }
 
