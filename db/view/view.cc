@@ -54,6 +54,7 @@
 #include <boost/algorithm/cxx11/all_of.hpp>
 
 #include <seastar/core/future-util.hh>
+#include <seastar/core/coroutine.hh>
 
 #include "database.hh"
 #include "clustering_bounds_comparator.hh"
@@ -1203,9 +1204,10 @@ future<> mutate_MV(
         service::allow_hints allow_hints,
         wait_for_all_updates wait_for_all)
 {
-    auto fs = std::make_unique<std::vector<future<>>>();
-    fs->reserve(view_updates.size());
-    for (frozen_mutation_and_schema& mut : view_updates) {
+    static constexpr size_t max_concurrent_updates = 128;
+    std::exception_ptr err = nullptr;
+    co_await max_concurrent_for_each(view_updates, max_concurrent_updates,
+            [&err, base_token, &stats, &cf_stats, tr_state, &pending_view_updates, allow_hints, wait_for_all] (frozen_mutation_and_schema mut) mutable -> future<> {
         auto view_token = dht::get_token(*mut.s, mut.fm.key());
         auto& keyspace_name = mut.s->ks_name();
         auto target_endpoint = get_view_natural_endpoint(keyspace_name, base_token, view_token);
@@ -1246,7 +1248,7 @@ future<> mutate_MV(
             auto mut_ptr = remote_endpoints.empty() ? std::make_unique<frozen_mutation>(std::move(mut.fm)) : std::make_unique<frozen_mutation>(mut.fm);
             tracing::trace(tr_state, "Locally applying view update for {}.{}; base token = {}; view token = {}",
                     mut.s->ks_name(), mut.s->cf_name(), base_token, view_token);
-            future<> local_view_update = service::get_local_storage_proxy().mutate_locally(mut.s, *mut_ptr, std::move(tr_state), db::commitlog::force_sync::no).then_wrapped(
+            future<> local_update = service::get_local_storage_proxy().mutate_locally(mut.s, *mut_ptr, std::move(tr_state), db::commitlog::force_sync::no).then_wrapped(
                     [s = mut.s, &stats, &cf_stats, tr_state, base_token, view_token, my_address, mut_ptr = std::move(mut_ptr),
                             units = sem_units.split(sem_units.count())] (future<>&& f) {
                 --stats.writes;
@@ -1262,7 +1264,13 @@ future<> mutate_MV(
                 tracing::trace(tr_state, "Successfully applied local view update for {}", my_address);
                 return make_ready_future<>();
             });
-            fs->push_back(std::move(local_view_update));
+            try {
+                co_await std::move(local_update);
+            } catch (...) {
+                if (!err) {
+                    err = std::current_exception();
+                }
+            }
             // We just applied a local update to the target endpoint, so it should now be removed
             // from the possible targets
             target_endpoint.reset();
@@ -1301,16 +1309,23 @@ future<> mutate_MV(
                 return make_ready_future<>();
             });
             if (wait_for_all) {
-                fs->push_back(std::move(view_update));
+                try {
+                    co_await std::move(view_update);
+                } catch (...) {
+                    if (!err) {
+                        err = std::current_exception();
+                    }
+                }
             } else {
                 // The update is sent to background in order to preserve availability,
                 // its parallelism is limited by view_update_concurrency_semaphore
                 (void)view_update;
             }
         }
+    });
+    if (err) {
+        std::rethrow_exception(err);
     }
-    auto f = seastar::when_all_succeed(fs->begin(), fs->end());
-    return f.finally([fs = std::move(fs)] { });
 }
 
 view_builder::view_builder(database& db, db::system_distributed_keyspace& sys_dist_ks, service::migration_notifier& mn)
