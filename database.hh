@@ -1240,6 +1240,7 @@ public:
 private:
     ::cf_stats _cf_stats;
     static constexpr size_t max_count_concurrent_reads{100};
+    static constexpr size_t max_count_concurrent_view_update_reads{4};
     size_t max_memory_concurrent_reads() { return _dbcfg.available_memory * 0.02; }
     // Assume a queued read takes up 10kB of memory, and allow 2% of memory to be filled up with such reads.
     size_t max_inactive_queue_length() { return _dbcfg.available_memory * 0.02 / 10000; }
@@ -1248,7 +1249,7 @@ private:
     size_t max_memory_streaming_concurrent_reads() { return _dbcfg.available_memory * 0.02; }
     static constexpr size_t max_count_system_concurrent_reads{10};
     size_t max_memory_system_concurrent_reads() { return _dbcfg.available_memory * 0.02; };
-    size_t max_memory_pending_view_updates() const { return _dbcfg.available_memory * 0.1; }
+    size_t max_memory_pending_view_updates() const { return _dbcfg.available_memory * 0.01; }
 
     struct db_stats {
         uint64_t total_writes = 0;
@@ -1282,6 +1283,7 @@ private:
     reader_concurrency_semaphore _streaming_concurrency_sem;
     reader_concurrency_semaphore _compaction_concurrency_sem;
     reader_concurrency_semaphore _system_read_concurrency_sem;
+    reader_concurrency_semaphore _view_update_read_concurrency_sem;
 
     db::timeout_semaphore _view_update_concurrency_sem{max_memory_pending_view_updates()};
 

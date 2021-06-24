@@ -240,6 +240,7 @@ void database::setup_scylla_memory_diagnostics_producer() {
                 {"streaming", _streaming_concurrency_sem},
                 {"system", _system_read_concurrency_sem},
                 {"compaction", _compaction_concurrency_sem},
+                {"view_update", _view_update_read_concurrency_sem},
         };
         for (const auto& [name, sem] : semaphores) {
             const auto initial_res = sem.initial_resources();
@@ -344,6 +345,9 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
             max_count_concurrent_reads,
             max_memory_system_concurrent_reads(),
             "_system_read_concurrency_sem")
+    , _view_update_read_concurrency_sem(max_count_concurrent_view_update_reads,
+        max_memory_pending_view_updates(),
+        "_view_update_read_concurrency_sem")
     , _data_query_stage("data_query", &column_family::query)
     , _mutation_query_stage("mutation_query", &column_family::mutation_query)
     , _apply_stage("db_apply", &database::do_apply)
@@ -459,6 +463,7 @@ database::setup_metrics() {
     auto user_label_instance = class_label("user");
     auto streaming_label_instance = class_label("streaming");
     auto system_label_instance = class_label("system");
+    auto view_update_label_instance = class_label("view_update");
 
     _metrics.add_group("memory", {
         sm::make_gauge("dirty_bytes", [this] { return _dirty_memory_manager.real_dirty_memory() + _system_dirty_memory_manager.real_dirty_memory(); },
@@ -571,6 +576,10 @@ database::setup_metrics() {
                        sm::description("Holds the number of currently active read operations. "),
                        {user_label_instance}),
 
+        sm::make_gauge("active_reads", [this] { return max_count_concurrent_view_update_reads - _view_update_read_concurrency_sem.available_resources().count; },
+                       sm::description("Holds the number of currently active view update read operations. "),
+                       {view_update_label_instance}),
+
     });
 
     // Registering all the metrics with a single call causes the stack size to blow up.
@@ -584,6 +593,10 @@ database::setup_metrics() {
         sm::make_gauge("queued_reads", [this] { return _read_concurrency_sem.waiters(); },
                        sm::description("Holds the number of currently queued read operations."),
                        {user_label_instance}),
+
+        sm::make_gauge("queued_reads", [this] { return _view_update_read_concurrency_sem.waiters(); },
+                       sm::description("Holds the number of currently queued read operations."),
+                       {view_update_label_instance}),
 
         sm::make_gauge("paused_reads", _read_concurrency_sem.get_stats().inactive_reads,
                        sm::description("The number of currently active reads that are temporarily paused."),
@@ -1826,7 +1839,7 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, tracing::tra
     if (cf.views().empty()) {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout, sync).finally([op = std::move(op)] { });
     }
-    future<row_locker::lock_holder> f = cf.push_view_replica_updates(s, m, timeout, std::move(tr_state), get_reader_concurrency_semaphore());
+    future<row_locker::lock_holder> f = cf.push_view_replica_updates(s, m, timeout, std::move(tr_state), _view_update_read_concurrency_sem);
     return f.then([this, s = std::move(s), uuid = std::move(uuid), &m, timeout, &cf, op = std::move(op), sync] (row_locker::lock_holder lock) mutable {
         return apply_with_commitlog(std::move(s), cf, std::move(uuid), m, timeout, sync).finally(
                 // Hold the local lock on the base-table partition or row
@@ -2062,7 +2075,8 @@ database::stop() {
                     _read_concurrency_sem.stop(),
                     _streaming_concurrency_sem.stop(),
                     _compaction_concurrency_sem.stop(),
-                    _system_read_concurrency_sem.stop()).discard_result();
+                    _system_read_concurrency_sem.stop(),
+                    _view_update_read_concurrency_sem.stop()).discard_result();
         });
     });
 }
