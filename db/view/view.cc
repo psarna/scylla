@@ -83,6 +83,8 @@
 #include "types/map.hh"
 #include "utils/error_injection.hh"
 #include "utils/exponential_backoff_retry.hh"
+#include "query-result-writer.hh"
+#include "multishard_mutation_query.hh"
 
 using namespace std::chrono_literals;
 
@@ -318,6 +320,50 @@ static bool is_partition_key_empty(
     }
 }
 
+// Checks if the result matches the provided view filter
+class view_filter_checking_visitor {
+    const schema& _base;
+    const view_info& _view;
+    const std::vector<bytes>& _pk;
+    const std::vector<bytes>& _ck;
+
+    bool _matches_view_filter = true;
+public:
+    view_filter_checking_visitor(const schema& base, const view_info& view, const std::vector<bytes>& pk, const std::vector<bytes>& ck)
+        : _base(base)
+        , _view(view)
+        , _pk(pk)
+        , _ck(ck)
+    {}
+
+    void accept_new_partition(const partition_key& key, uint64_t row_count) {}
+    void accept_new_partition(uint64_t row_count) {}
+
+    void accept_new_row(const clustering_key& key, const query::result_row_view& static_row, const query::result_row_view& row) {
+        _matches_view_filter = check_if_matches(static_row, row);
+    }
+
+    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {
+        _matches_view_filter = check_if_matches(static_row, row);
+    }
+    void accept_partition_end(const query::result_row_view& static_row) {}
+
+    bool check_if_matches(const query::result_row_view& static_row, const query::result_row_view& row) const {
+        auto selection = cql3::selection::selection::wildcard(_base.shared_from_this());
+        return boost::algorithm::all_of(
+            _view.select_statement().get_restrictions()->get_non_pk_restriction() | boost::adaptors::map_values,
+            [&] (auto&& r) {
+                return cql3::expr::is_satisfied_by(
+                        r->expression, _pk, _ck, static_row, &row, *selection, cql3::query_options({ }));
+            }
+        );
+    }
+
+    bool matches_view_filter() const {
+        return _matches_view_filter;
+    }
+};
+
 static query::partition_slice make_partition_slice(const schema& s) {
     query::partition_slice::option_set opts;
     opts.set(query::partition_slice::option::send_partition_key);
@@ -332,14 +378,33 @@ static query::partition_slice make_partition_slice(const schema& s) {
             std::move(opts));
 }
 
+view_builder::build_step& view_builder::get_or_create_build_step(utils::UUID base_id) {
+    auto it = _base_to_build_step.find(base_id);
+    if (it == _base_to_build_step.end()) {
+        auto base = _db.find_column_family(base_id).shared_from_this();
+        auto p = _base_to_build_step.emplace(base_id, build_step{base, make_partition_slice(*base->schema())});
+        // Iterators could have been invalidated if there was rehashing, so just reset the cursor.
+        _current_step = p.first;
+        it = p.first;
+    }
+    return it->second;
+}
+
 bool matches_view_filter(const schema& base, const view_info& view, const partition_key& key, const clustering_row& update, gc_clock::time_point now) {
+    std::vector<bytes> exploded_pk = key.explode();
+    std::vector<bytes> exploded_ck = update.key().explode();
+    auto slice = make_partition_slice(base);
+
+    data_query_result_builder builder(base, slice, query::result_options::only_result(), query::result_memory_accounter{10*1024*1024});
+    builder.consume_new_partition(dht::decorate_key(base, key));
+    builder.consume(clustering_row(base, update), row_tombstone{}, update.is_live(base, tombstone{}, now));
+    builder.consume_end_of_partition();
+    auto result = builder.consume_end_of_stream();
+    view_filter_checking_visitor visitor(base, view,exploded_pk, exploded_ck);
+    query::result_view::consume(result, slice, visitor);
+
     return clustering_prefix_matches(base, view, key, update.key(), now)
-            && boost::algorithm::all_of(
-                view.select_statement().get_restrictions()->get_non_pk_restriction() | boost::adaptors::map_values,
-                [&] (auto&& r) {
-                    return cql3::expr::is_satisfied_by(
-                            r->expression, base, key, update.key(), update.cells(), cql3::query_options({ }), now);
-                });
+            && visitor.matches_view_filter();
 }
 
 class view_updates final {
@@ -1440,18 +1505,6 @@ future<> view_builder::stop() {
             });
         });
     });
-}
-
-view_builder::build_step& view_builder::get_or_create_build_step(utils::UUID base_id) {
-    auto it = _base_to_build_step.find(base_id);
-    if (it == _base_to_build_step.end()) {
-        auto base = _db.find_column_family(base_id).shared_from_this();
-        auto p = _base_to_build_step.emplace(base_id, build_step{base, make_partition_slice(*base->schema())});
-        // Iterators could have been invalidated if there was rehashing, so just reset the cursor.
-        _current_step = p.first;
-        it = p.first;
-    }
-    return it->second;
 }
 
 future<> view_builder::initialize_reader_at_current_token(build_step& step) {
