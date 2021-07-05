@@ -83,6 +83,7 @@
 #include "types/map.hh"
 #include "utils/error_injection.hh"
 #include "utils/exponential_backoff_retry.hh"
+#include "query-result-writer.hh"
 
 using namespace std::chrono_literals;
 
@@ -318,14 +319,153 @@ static bool is_partition_key_empty(
     }
 }
 
+class data_query_result_builder {
+public:
+    using result_type = query::result;
+    static constexpr emit_only_live_rows only_live = emit_only_live_rows::yes;
+
+private:
+    std::unique_ptr<query::result::builder> _res_builder;
+    query_result_builder _builder;
+
+public:
+    data_query_result_builder(const schema& s, const query::partition_slice& slice, query::result_options opts, query::result_memory_accounter&& accounter)
+        : _res_builder(std::make_unique<query::result::builder>(slice, opts, std::move(accounter)))
+        , _builder(s, *_res_builder) { }
+
+    void consume_new_partition(const dht::decorated_key& dk) { _builder.consume_new_partition(dk); }
+    void consume(tombstone t) { _builder.consume(t); }
+    stop_iteration consume(static_row&& sr, tombstone t, bool is_alive) { return _builder.consume(std::move(sr), t, is_alive); }
+    stop_iteration consume(clustering_row&& cr, row_tombstone t, bool is_alive) { return _builder.consume(std::move(cr), t, is_alive); }
+    stop_iteration consume(range_tombstone&& rt) { return _builder.consume(std::move(rt)); }
+    stop_iteration consume_end_of_partition()  { return _builder.consume_end_of_partition(); }
+    result_type consume_end_of_stream() {
+        _builder.consume_end_of_stream();
+        return _res_builder->build();
+    }
+};
+
+/*
+static
+managed_bytes_opt do_get_value(const schema& schema,
+        const column_definition& cdef,
+        const partition_key& key,
+        const clustering_key_prefix& ckey,
+        const row& cells,
+        gc_clock::time_point now) {
+    switch (cdef.kind) {
+        case column_kind::partition_key:
+            return managed_bytes(key.get_component(schema, cdef.component_index()));
+        case column_kind::clustering_key:
+            return managed_bytes(ckey.get_component(schema, cdef.component_index()));
+        default:
+            auto cell = cells.find_cell(cdef.id);
+            if (!cell) {
+                return std::nullopt;
+            }
+            assert(cdef.is_atomic());
+            auto c = cell->as_atomic_cell(cdef);
+            return c.is_dead(now) ? std::nullopt : managed_bytes_opt(c.value());
+    }
+}
+
+bool is_satisfied_by(
+        const expression& restr,
+        const std::vector<bytes>& partition_key, const std::vector<bytes>& clustering_key,
+        const query::result_row_view& static_row, const query::result_row_view* row,
+        const selection& selection, const query_options& options) {
+    const auto regulars = get_non_pk_values(selection, static_row, row);
+    return is_satisfied_by(
+            restr, {options, row_data_from_partition_slice{partition_key, clustering_key, regulars, selection}});
+}
+
+*/
+
+// Checks if the result matches the provided view filter
+class view_filter_checking_visitor {
+    const schema& _base;
+    const view_info& _view;
+    const std::vector<bytes>& _pk;
+    const std::vector<bytes>& _ck;
+
+    bool _matches_view_filter = true;
+public:
+    view_filter_checking_visitor(const schema& base, const view_info& view, const std::vector<bytes>& pk, const std::vector<bytes>& ck)
+        : _base(base)
+        , _view(view)
+        , _pk(pk)
+        , _ck(ck)
+    {}
+
+    void accept_new_partition(const partition_key& key, uint64_t row_count) {}
+    void accept_new_partition(uint64_t row_count) {}
+
+    void accept_new_row(const clustering_key& key, const query::result_row_view& static_row, const query::result_row_view& row) {
+        _matches_view_filter = check_if_matches(static_row, row);
+    }
+
+    void accept_new_row(const query::result_row_view& static_row, const query::result_row_view& row) {
+        _matches_view_filter = check_if_matches(static_row, row);
+    }
+    void accept_partition_end(const query::result_row_view& static_row) {}
+
+    bool check_if_matches(const query::result_row_view& static_row, const query::result_row_view& row) const {
+        auto selection = cql3::selection::selection::wildcard(_base.shared_from_this());
+        return boost::algorithm::all_of(
+            _view.select_statement().get_restrictions()->get_non_pk_restriction() | boost::adaptors::map_values,
+            [&] (auto&& r) {
+                return cql3::expr::is_satisfied_by(
+                        r->expression, _pk, _ck, static_row, &row, *selection, cql3::query_options({ }));
+            }
+        );
+    }
+
+    bool matches_view_filter() const {
+        return _matches_view_filter;
+    }
+};
+
+static query::partition_slice make_partition_slice(const schema& s) {
+    query::partition_slice::option_set opts;
+    opts.set(query::partition_slice::option::send_partition_key);
+    opts.set(query::partition_slice::option::send_clustering_key);
+    opts.set(query::partition_slice::option::send_timestamp);
+    opts.set(query::partition_slice::option::send_ttl);
+    return query::partition_slice(
+            {query::full_clustering_range},
+            { },
+            boost::copy_range<query::column_id_vector>(s.regular_columns()
+                    | boost::adaptors::transformed(std::mem_fn(&column_definition::id))),
+            std::move(opts));
+}
+
+view_builder::build_step& view_builder::get_or_create_build_step(utils::UUID base_id) {
+    auto it = _base_to_build_step.find(base_id);
+    if (it == _base_to_build_step.end()) {
+        auto base = _db.find_column_family(base_id).shared_from_this();
+        auto p = _base_to_build_step.emplace(base_id, build_step{base, make_partition_slice(*base->schema())});
+        // Iterators could have been invalidated if there was rehashing, so just reset the cursor.
+        _current_step = p.first;
+        it = p.first;
+    }
+    return it->second;
+}
+
 bool matches_view_filter(const schema& base, const view_info& view, const partition_key& key, const clustering_row& update, gc_clock::time_point now) {
+    std::vector<bytes> exploded_pk = key.explode();
+    std::vector<bytes> exploded_ck = update.key().explode();
+    auto slice = make_partition_slice(base);
+
+    data_query_result_builder builder(base, slice, query::result_options::only_result(), query::result_memory_accounter{10*1024*1024});
+    builder.consume_new_partition(dht::decorate_key(base, key));
+    builder.consume(clustering_row(base, update), row_tombstone{}, update.is_live(base, tombstone{}, now));
+    builder.consume_end_of_partition();
+    auto result = builder.consume_end_of_stream();
+    view_filter_checking_visitor visitor(base, view,exploded_pk, exploded_ck);
+    query::result_view::consume(result, slice, visitor);
+
     return clustering_prefix_matches(base, view, key, update.key(), now)
-            && boost::algorithm::all_of(
-                view.select_statement().get_restrictions()->get_non_pk_restriction() | boost::adaptors::map_values,
-                [&] (auto&& r) {
-                    return cql3::expr::is_satisfied_by(
-                            r->expression, base, key, update.key(), update.cells(), cql3::query_options({ }), now);
-                });
+            && visitor.matches_view_filter();
 }
 
 class view_updates final {
@@ -1426,32 +1566,6 @@ future<> view_builder::stop() {
             });
         });
     });
-}
-
-static query::partition_slice make_partition_slice(const schema& s) {
-    query::partition_slice::option_set opts;
-    opts.set(query::partition_slice::option::send_partition_key);
-    opts.set(query::partition_slice::option::send_clustering_key);
-    opts.set(query::partition_slice::option::send_timestamp);
-    opts.set(query::partition_slice::option::send_ttl);
-    return query::partition_slice(
-            {query::full_clustering_range},
-            { },
-            boost::copy_range<query::column_id_vector>(s.regular_columns()
-                    | boost::adaptors::transformed(std::mem_fn(&column_definition::id))),
-            std::move(opts));
-}
-
-view_builder::build_step& view_builder::get_or_create_build_step(utils::UUID base_id) {
-    auto it = _base_to_build_step.find(base_id);
-    if (it == _base_to_build_step.end()) {
-        auto base = _db.find_column_family(base_id).shared_from_this();
-        auto p = _base_to_build_step.emplace(base_id, build_step{base, make_partition_slice(*base->schema())});
-        // Iterators could have been invalidated if there was rehashing, so just reset the cursor.
-        _current_step = p.first;
-        it = p.first;
-    }
-    return it->second;
 }
 
 future<> view_builder::initialize_reader_at_current_token(build_step& step) {
