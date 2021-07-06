@@ -740,33 +740,23 @@ public:
     result_type consume_end_of_stream() { return _builder.consume_end_of_stream(); }
 };
 
-class data_query_result_builder {
-public:
-    using result_type = query::result;
-    static constexpr emit_only_live_rows only_live = emit_only_live_rows::yes;
-
-private:
-    std::unique_ptr<query::result::builder> _res_builder;
-    query_result_builder _builder;
-
-public:
-    data_query_result_builder(const schema& s, const query::partition_slice& slice, query::result_options opts, query::result_memory_accounter&& accounter)
-        : _res_builder(std::make_unique<query::result::builder>(slice, opts, std::move(accounter)))
-        , _builder(s, *_res_builder) { }
-
-    void consume_new_partition(const dht::decorated_key& dk) { _builder.consume_new_partition(dk); }
-    void consume(tombstone t) { _builder.consume(t); }
-    stop_iteration consume(static_row&& sr, tombstone t, bool is_alive) { return _builder.consume(std::move(sr), t, is_alive); }
-    stop_iteration consume(clustering_row&& cr, row_tombstone t, bool is_alive) { return _builder.consume(std::move(cr), t, is_alive); }
-    stop_iteration consume(range_tombstone&& rt) { return _builder.consume(std::move(rt)); }
-    stop_iteration consume_end_of_partition()  { return _builder.consume_end_of_partition(); }
-    result_type consume_end_of_stream() {
-        _builder.consume_end_of_stream();
-        return _res_builder->build();
-    }
-};
-
 } // anonymous namespace
+
+
+data_query_result_builder::data_query_result_builder(const schema& s, const query::partition_slice& slice, query::result_options opts, query::result_memory_accounter&& accounter)
+    : _res_builder(std::make_unique<query::result::builder>(slice, opts, std::move(accounter)))
+    , _builder(s, *_res_builder) { }
+
+void data_query_result_builder::consume_new_partition(const dht::decorated_key& dk) { _builder.consume_new_partition(dk); }
+void data_query_result_builder::consume(tombstone t) { _builder.consume(t); }
+stop_iteration data_query_result_builder::consume(static_row&& sr, tombstone t, bool is_alive) { return _builder.consume(std::move(sr), t, is_alive); }
+stop_iteration data_query_result_builder::consume(clustering_row&& cr, row_tombstone t, bool is_alive) { return _builder.consume(std::move(cr), t, is_alive); }
+stop_iteration data_query_result_builder::consume(range_tombstone&& rt) { return _builder.consume(std::move(rt)); }
+stop_iteration data_query_result_builder::consume_end_of_partition()  { return _builder.consume_end_of_partition(); }
+data_query_result_builder::result_type data_query_result_builder::consume_end_of_stream() {
+    _builder.consume_end_of_stream();
+    return _res_builder->build();
+}
 
 future<std::tuple<foreign_ptr<lw_shared_ptr<reconcilable_result>>, cache_temperature>> query_mutations_on_all_shards(
         distributed<database>& db,

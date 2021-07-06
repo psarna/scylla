@@ -26,6 +26,8 @@
 #include "cache_temperature.hh"
 #include "db/timeout_clock.hh"
 #include "dht/i_partitioner.hh"
+#include "mutation_compactor.hh"
+#include "query-result-writer.hh"
 
 #include <seastar/core/distributed.hh>
 
@@ -98,3 +100,24 @@ future<std::tuple<foreign_ptr<lw_shared_ptr<query::result>>, cache_temperature>>
         query::result_options opts,
         tracing::trace_state_ptr trace_state,
         db::timeout_clock::time_point timeout);
+
+class data_query_result_builder {
+public:
+    using result_type = query::result;
+    static constexpr emit_only_live_rows only_live = emit_only_live_rows::yes;
+
+private:
+    std::unique_ptr<query::result::builder> _res_builder;
+    query_result_builder _builder;
+
+public:
+    data_query_result_builder(const schema& s, const query::partition_slice& slice, query::result_options opts, query::result_memory_accounter&& accounter);
+
+    void consume_new_partition(const dht::decorated_key& dk);
+    void consume(tombstone t);
+    stop_iteration consume(static_row&& sr, tombstone t, bool is_alive);
+    stop_iteration consume(clustering_row&& cr, row_tombstone t, bool is_alive);
+    stop_iteration consume(range_tombstone&& rt);
+    stop_iteration consume_end_of_partition();
+    result_type consume_end_of_stream();
+};
